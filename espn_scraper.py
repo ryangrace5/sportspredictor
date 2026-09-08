@@ -46,6 +46,7 @@ FOOTBALL_FIRST_WEEK = {"NFL": 1, "NCAAF": 0}
 BODY_RANGE = "A2:D1000"
 HEADER_RANGE = "A1:D1"
 RECORD_RE = re.compile(r"^\s*(\d+)\s*-\s*(\d+)(?:\s*-\s*(\d+))?\s*$")
+TEAM_LOGOS_PATH = os.path.join(os.path.dirname(__file__), "team_logos.json")
 
 
 def _load_credentials() -> Credentials:
@@ -252,6 +253,25 @@ def _fetch_football_team_catalog(
     return names
 
 
+def _local_ncaaf_team_catalog() -> List[str]:
+    """Return the curated NCAAF team names already maintained by BZ Bets.
+
+    ESPN's generic college-football teams endpoint is useful for discovering
+    FCS opponents, but it is not reliable enough to be the sole source of the
+    FBS roster. Seeding from team_logos.json guarantees known BZ Bets teams
+    such as Texas Tech remain present even when ESPN's catalog omits them.
+    """
+    try:
+        with open(TEAM_LOGOS_PATH, "r", encoding="utf-8") as handle:
+            logo_data = json.load(handle)
+        names = sorted((logo_data.get("NCAAF") or {}).keys())
+        logging.info("Local NCAAF catalog returned %s teams.", len(names))
+        return names
+    except Exception as exc:
+        logging.warning("Local NCAAF catalog load failed: %s", exc)
+        return []
+
+
 def _score_value(value: Any) -> int | None:
     if isinstance(value, dict):
         value = value.get("value", value.get("displayValue"))
@@ -347,10 +367,15 @@ def fetch_football_scoreboard_stats(
     session = session or _http()
     rows_by_team: Dict[str, List[Any]] = {}
 
-    # Keep teams that have not played yet on the sheet.
+    # Always seed BZ Bets' curated NCAAF list first. ESPN's catalog is then
+    # merged in so FCS opponents and newly discovered teams are not lost.
+    if league == "NCAAF":
+        for name in _local_ncaaf_team_catalog():
+            rows_by_team[name] = [name, 0, 0, 0]
+
     try:
         for name in _fetch_football_team_catalog(league, session):
-            rows_by_team[name] = [name, 0, 0, 0]
+            rows_by_team.setdefault(name, [name, 0, 0, 0])
     except Exception as exc:
         logging.warning("%s team catalog fetch failed: %s", league, exc)
 
@@ -366,7 +391,11 @@ def fetch_football_scoreboard_stats(
         raise RuntimeError(f"Could not determine current ESPN week for {league}")
 
     completed_games = 0
-    for week in range(FOOTBALL_FIRST_WEEK[league], current_week):
+
+    # Fetch every regular-season week explicitly, including the current week.
+    # ESPN's default scoreboard response can be date-scoped and may omit games
+    # that were played earlier in the same week (the Texas Tech case).
+    for week in range(FOOTBALL_FIRST_WEEK[league], current_week + 1):
         week_params = dict(params)
         week_params.update({"week": week, "seasontype": 2})
         response = session.get(
@@ -376,10 +405,6 @@ def fetch_football_scoreboard_stats(
         completed_games += _aggregate_scoreboard_events(
             (response.json() or {}).get("events") or [], rows_by_team
         )
-
-    completed_games += _aggregate_scoreboard_events(
-        current_data.get("events") or [], rows_by_team
-    )
 
     rows = sorted(rows_by_team.values(), key=lambda row: str(row[0]).lower())
     teams_with_games = sum(1 for row in rows if _to_int(row[1]) > 0)
