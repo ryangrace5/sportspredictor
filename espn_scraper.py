@@ -1,312 +1,489 @@
-import os
 import json
 import logging
-from datetime import datetime
-from typing import Any, Dict, Iterable, List, Tuple
-
-import requests
-from requests.adapters import HTTPAdapter, Retry
-import gspread
-from google.oauth2.service_account import Credentials
-import pytz
+import os
 import re
+from datetime import datetime
+from typing import Any, Dict, Iterable, List
 
-# -----------------------------------------------------------------------------
-# Logging
-# -----------------------------------------------------------------------------
+import gspread
+import pytz
+import requests
+from google.oauth2.service_account import Credentials
+from requests.adapters import HTTPAdapter, Retry
+
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# -----------------------------------------------------------------------------
-# Config
-# -----------------------------------------------------------------------------
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-SHEET_ID = os.environ.get("GOOGLE_SHEETS_ID", "1ub_a9jetvc9BB6paGVIQ_0N_ETXLMEG43tD7zeE3Ljg")
+SHEET_ID = os.environ.get(
+    "GOOGLE_SHEETS_ID", "1ub_a9jetvc9BB6paGVIQ_0N_ETXLMEG43tD7zeE3Ljg"
+)
 
-ESPN_URLS = {
-    "MLB":  "https://site.api.espn.com/apis/v2/sports/baseball/mlb/standings",
-    "NBA":  "https://site.api.espn.com/apis/v2/sports/basketball/nba/standings",
-    "NFL":  "https://site.api.espn.com/apis/v2/sports/football/nfl/standings",
-    "NCAAF":"https://site.api.espn.com/apis/v2/sports/football/college-football/standings",
+ESPN_STANDINGS_URLS = {
+    "MLB": "https://site.api.espn.com/apis/v2/sports/baseball/mlb/standings",
+    "NBA": "https://site.api.espn.com/apis/v2/sports/basketball/nba/standings",
+    "NFL": "https://site.api.espn.com/apis/v2/sports/football/nfl/standings",
+    "NCAAF": "https://site.api.espn.com/apis/v2/sports/football/college-football/standings",
 }
 
-# Ranges we write into (per worksheet)
+FOOTBALL_SCOREBOARD_URLS = {
+    "NFL": "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard",
+    "NCAAF": (
+        "https://site.api.espn.com/apis/site/v2/sports/football/"
+        "college-football/scoreboard"
+    ),
+}
+
+FOOTBALL_TEAMS_URLS = {
+    "NFL": "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams",
+    "NCAAF": (
+        "https://site.api.espn.com/apis/site/v2/sports/football/"
+        "college-football/teams"
+    ),
+}
+
+FOOTBALL_FIRST_WEEK = {"NFL": 1, "NCAAF": 0}
 BODY_RANGE = "A2:D1000"
 HEADER_RANGE = "A1:D1"
+RECORD_RE = re.compile(r"^\s*(\d+)\s*-\s*(\d+)(?:\s*-\s*(\d+))?\s*$")
 
-# -----------------------------------------------------------------------------
-# Google Auth
-# -----------------------------------------------------------------------------
+
 def _load_credentials() -> Credentials:
     blob = os.environ.get("GOOGLE_CREDS_JSON")
     if blob:
         return Credentials.from_service_account_info(json.loads(blob), scopes=SCOPES)
+
     secret = "/etc/secrets/service_account.json"
     if os.path.exists(secret):
         return Credentials.from_service_account_file(secret, scopes=SCOPES)
+
     gac = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
     if gac and os.path.exists(gac):
         return Credentials.from_service_account_file(gac, scopes=SCOPES)
+
     local = os.path.join(os.path.dirname(__file__), "service_account.json")
     if os.path.exists(local):
         return Credentials.from_service_account_file(local, scopes=SCOPES)
+
     raise RuntimeError("No Google credentials found for espn_scraper.")
 
-# -----------------------------------------------------------------------------
-# HTTP (retrying)
-# -----------------------------------------------------------------------------
+
 def _http() -> requests.Session:
-    s = requests.Session()
-    s.headers.update({"User-Agent": "bzbetz-predictor/1.4"})
+    session = requests.Session()
+    session.headers.update(
+        {
+            "User-Agent": (
+                "Mozilla/5.0 (compatible; BZBets/2.0; "
+                "+https://github.com/vzjavi/sportspredictor)"
+            ),
+            "Accept": "application/json",
+        }
+    )
     retries = Retry(
         total=3,
         backoff_factor=0.4,
         status_forcelist=(429, 500, 502, 503, 504),
         allowed_methods=frozenset(["GET", "HEAD"]),
     )
-    s.mount("https://", HTTPAdapter(max_retries=retries))
-    return s
+    session.mount("https://", HTTPAdapter(max_retries=retries))
+    return session
 
-# -----------------------------------------------------------------------------
-# Helpers
-# -----------------------------------------------------------------------------
-REC_RX = re.compile(r"^\s*(\d+)\s*-\s*(\d+)(?:\s*-\s*(\d+))?\s*$")
 
-def _to_int(x: Any, default: int = 0) -> int:
+def _to_int(value: Any, default: int = 0) -> int:
     try:
-        return int(float(x))
-    except Exception:
+        return int(float(value))
+    except (TypeError, ValueError):
         return default
 
-def _num(x: Any) -> float:
-    if x in (None, "", "-", "—"):
-        return 0.0
-    try:
-        return float(x)
-    except Exception:
-        return 0.0
 
-def _parse_record_str(s: str) -> Tuple[int,int,int]:
-    if not s:
-        return 0,0,0
-    m = REC_RX.match(s)
-    if not m:
-        return 0,0,0
-    return int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)
+def _record_games(value: Any) -> int:
+    if not isinstance(value, str):
+        return 0
+    match = RECORD_RE.match(value)
+    if not match:
+        return 0
+    return sum(int(part or 0) for part in match.groups())
 
-def _looks(name: str, abbr: str, *cands: str) -> bool:
-    n = (name or "").lower()
-    a = (abbr or "").upper()
-    if n in cands: return True
-    return a in {c.upper() for c in cands}
 
-# -----------------------------------------------------------------------------
-# PF/PA + G extraction (very defensive)
-# -----------------------------------------------------------------------------
-def _extract_from_stats(stats: List[Dict[str,Any]]) -> Tuple[int,int,int,int,int,int,int]:
-    """
-    Returns (pf, pa, gp_direct, wins, losses, ties, gp_from_recordish_display)
-    - gp_direct: from GP/gamesPlayed style fields
-    - gp_from_recordish_display: parsed from any displayValue like '10-3'
-    """
-    pf = pa = gp_direct = wins = losses = ties = gp_rec_disp = 0
+def _stat_value(stat: Dict[str, Any]) -> Any:
+    value = stat.get("value")
+    if value in (None, "", "-", "—"):
+        value = stat.get("displayValue")
+    return value
 
-    for s in stats or []:
-        name = s.get("name") or ""
-        abbr = s.get("abbreviation") or ""
-        raw_val = s.get("value")
-        if raw_val in (None, "", "-", "—"):
-            raw_val = s.get("displayValue")
 
-        # PF/PA
-        low = name.lower()
-        if name in ("pointsFor", "runsFor") or _looks(low, abbr, "pf", "points_for", "overallpointsfor") or ("points" in low and ("for" in low or "scored" in low)) or abbr.upper()=="PF":
-            pf = max(pf, _to_int(_num(raw_val), 0))
-        if name in ("pointsAgainst", "runsAgainst") or _looks(low, abbr, "pa", "points_against", "overallpointsagainst") or ("points" in low and ("against" in low or "allowed" in low)) or abbr.upper()=="PA":
-            pa = max(pa, _to_int(_num(raw_val), 0))
+def _extract_pf_pa_g(entry: Dict[str, Any]):
+    pf = pa = games = wins = losses = ties = 0
 
-        # GP direct
-        if _looks(low, abbr, "gamesplayed", "games", "gp") or ("overall" in low and ("gamesplayed" in low or low.endswith("gp"))):
-            gp_direct = max(gp_direct, _to_int(_num(raw_val), 0))
+    for stat in entry.get("stats") or []:
+        name = (stat.get("name") or "").lower()
+        abbr = (stat.get("abbreviation") or "").upper()
+        value = _stat_value(stat)
 
-        # Wins/Losses/Ties (various)
-        if _looks(low, abbr, "wins", "w", "overallwins"):
-            wins = max(wins, _to_int(_num(raw_val), 0))
-        if _looks(low, abbr, "losses", "l", "overalllosses"):
-            losses = max(losses, _to_int(_num(raw_val), 0))
-        if _looks(low, abbr, "ties", "t", "overallties"):
-            ties = max(ties, _to_int(_num(raw_val), 0))
+        if (
+            name in {"pointsfor", "runsfor", "overallpointsfor"}
+            or abbr in {"PF", "RF"}
+            or ("points" in name and ("for" in name or "scored" in name))
+        ):
+            pf = max(pf, _to_int(value))
+        elif (
+            name in {"pointsagainst", "runsagainst", "overallpointsagainst"}
+            or abbr in {"PA", "RA"}
+            or ("points" in name and ("against" in name or "allowed" in name))
+        ):
+            pa = max(pa, _to_int(value))
 
-        # Sometimes a generic "record" appears as a displayValue like "7-3"
-        disp = s.get("displayValue")
-        if isinstance(disp, str):
-            w,l,t = _parse_record_str(disp)
-            gp_rec_disp = max(gp_rec_disp, w + l + t)
+        if name in {"gamesplayed", "games", "overallgamesplayed"} or abbr == "GP":
+            games = max(games, _to_int(value))
+        elif name in {"wins", "overallwins"} or abbr == "W":
+            wins = max(wins, _to_int(value))
+        elif name in {"losses", "overalllosses"} or abbr == "L":
+            losses = max(losses, _to_int(value))
+        elif name in {"ties", "overallties"} or abbr == "T":
+            ties = max(ties, _to_int(value))
 
-    return pf, pa, gp_direct, wins, losses, ties, gp_rec_disp
+        games = max(games, _record_games(stat.get("displayValue")))
 
-def _extract_from_records_block(block: Dict[str,Any]) -> Tuple[int,int,int,int]:
-    """
-    From a single record object -> (gp, w, l, t)
-    Considers 'summary' and nested 'stats' names/abbreviations.
-    """
-    gp = w = l = t = 0
-
-    # "summary": "10-2" etc.
-    w2,l2,t2 = _parse_record_str(block.get("summary") or "")
-    w = max(w, w2); l = max(l, l2); t = max(t, t2)
-
-    for s in block.get("stats", []) or []:
-        name = (s.get("name") or "").lower()
-        abbr = (s.get("abbreviation") or "")
-        raw_val = s.get("value")
-        if raw_val in (None, "", "-", "—"):
-            raw_val = s.get("displayValue")
-        v = _num(raw_val)
-
-        if _looks(name, abbr, "wins", "w"):
-            w = max(w, _to_int(v, 0))
-        elif _looks(name, abbr, "losses", "l"):
-            l = max(l, _to_int(v, 0))
-        elif _looks(name, abbr, "ties", "t"):
-            t = max(t, _to_int(v, 0))
-        elif _looks(name, abbr, "gamesplayed", "games", "gp"):
-            gp = max(gp, _to_int(v, 0))
-
-        # Some feeds put record-like strings in displayValue here, too
-        disp = s.get("displayValue")
-        if isinstance(disp, str):
-            w3,l3,t3 = _parse_record_str(disp)
-            gp = max(gp, w3 + l3 + t3)
-            w = max(w, w3); l = max(l, l3); t = max(t, t3)
-
-    if gp == 0:
-        gp = w + l + t
-    return gp, w, l, t
-
-def _extract_pf_pa_g(entry: Dict[str,Any]) -> Tuple[int,int,int]:
-    """
-    Pull PF/PA/G from both 'stats' and 'record(s)' aggressively.
-    """
-    stats = entry.get("stats", []) or []
-    pf, pa, gp_direct, w_s, l_s, t_s, gp_from_disp = _extract_from_stats(stats)
-
-    gp_candidates = [gp_direct, gp_from_disp]
-
-    # singular 'record'
+    record_blocks = []
     if isinstance(entry.get("record"), dict):
-        gp1, w1, l1, t1 = _extract_from_records_block(entry["record"])
-        gp_candidates.append(gp1)
-        # use W/L/T if they look better than stats
-        w_s = max(w_s, w1); l_s = max(l_s, l1); t_s = max(t_s, t1)
-
-    # plural 'records'
+        record_blocks.append(entry["record"])
     if isinstance(entry.get("records"), list):
-        for rec in entry["records"]:
-            gp2, w2, l2, t2 = _extract_from_records_block(rec)
-            gp_candidates.append(gp2)
-            w_s = max(w_s, w2); l_s = max(l_s, l2); t_s = max(t_s, t2)
+        record_blocks.extend(entry["records"])
 
-    gp = max(gp_candidates) if gp_candidates else 0
-    if gp == 0 and (w_s or l_s or t_s):
-        gp = w_s + l_s + t_s
+    for record in record_blocks:
+        games = max(games, _record_games(record.get("summary")))
+        for stat in record.get("stats") or []:
+            name = (stat.get("name") or "").lower()
+            abbr = (stat.get("abbreviation") or "").upper()
+            value = _stat_value(stat)
+            if name == "wins" or abbr == "W":
+                wins = max(wins, _to_int(value))
+            elif name == "losses" or abbr == "L":
+                losses = max(losses, _to_int(value))
+            elif name == "ties" or abbr == "T":
+                ties = max(ties, _to_int(value))
+            elif name in {"gamesplayed", "games"} or abbr == "GP":
+                games = max(games, _to_int(value))
+            games = max(games, _record_games(stat.get("displayValue")))
 
-    return _to_int(pf, 0), _to_int(pa, 0), _to_int(gp, 0)
+    if games == 0 and (wins or losses or ties):
+        games = wins + losses + ties
 
-def _pick_better_row(existing: List[Any], incoming: List[Any]) -> List[Any]:
-    """
-    Prefer higher G; otherwise merge in non-zero PF/PA.
-    """
-    if not existing:
-        return incoming
-    name, g1, pf1, pa1 = existing
-    _,   g2, pf2, pa2 = incoming
-    if g2 > g1:
-        return [name, g2, pf2, pa2]
-    return [name, g1, pf1 or pf2, pa1 or pa2]
+    return pf, pa, games
 
-# -----------------------------------------------------------------------------
-# Fetch + parse ESPN
-# -----------------------------------------------------------------------------
-def fetch_espn_standings(league: str) -> List[List[Any]]:
-    logging.info(f"Fetching ESPN standings JSON for {league}...")
-    r = _http().get(ESPN_URLS[league], timeout=20)
-    r.raise_for_status()
-    data = r.json()
 
-    team_rows: Dict[str, List[Any]] = {}
-
-    def handle_entry(entry: Dict[str, Any]):
-        team = (entry.get("team") or {})
-        name = team.get("displayName") or team.get("shortDisplayName") or team.get("name")
-        if not name:
-            return
-        pf, pa, g = _extract_pf_pa_g(entry)
-        incoming = [name, g, pf, pa]
-        prev = team_rows.get(name)
-        best = _pick_better_row(prev, incoming) if prev else incoming
-        team_rows[name] = best
-        logging.info(str(best))
-
-    # Primary path
+def _standings_entries(data: Dict[str, Any]):
+    entries = []
     for child in data.get("children") or []:
-        for entry in (child.get("standings") or {}).get("entries", []) or []:
-            handle_entry(entry)
+        entries.extend((child.get("standings") or {}).get("entries") or [])
+    if not entries:
+        entries.extend((data.get("standings") or {}).get("entries") or [])
+    return entries
 
-    # Fallback
-    if not team_rows:
-        for entry in (data.get("standings") or {}).get("entries", []) or []:
-            handle_entry(entry)
 
-    rows = list(team_rows.values())
-    logging.info(f"✅ Retrieved data for {len(rows)} {league} teams.")
+def _fetch_standings_rows(
+    league: str, session: requests.Session | None = None
+) -> List[List[Any]]:
+    logging.info("Fetching ESPN standings JSON for %s...", league)
+    session = session or _http()
+    response = session.get(ESPN_STANDINGS_URLS[league], timeout=20)
+    response.raise_for_status()
+
+    rows_by_team: Dict[str, List[Any]] = {}
+    for entry in _standings_entries(response.json() or {}):
+        team = entry.get("team") or {}
+        name = (
+            team.get("displayName")
+            or team.get("shortDisplayName")
+            or team.get("name")
+        )
+        if not name:
+            continue
+
+        pf, pa, games = _extract_pf_pa_g(entry)
+        current = rows_by_team.get(name)
+        incoming = [name, games, pf, pa]
+
+        if not current or games > current[1]:
+            rows_by_team[name] = incoming
+        else:
+            current[2] = current[2] or pf
+            current[3] = current[3] or pa
+
+    rows = list(rows_by_team.values())
+    logging.info("Retrieved standings data for %s %s teams.", len(rows), league)
     return rows
 
-# -----------------------------------------------------------------------------
-# Google Sheets IO
-# -----------------------------------------------------------------------------
-def _open_worksheet(sh, title: str):
+
+def _football_params(league: str) -> Dict[str, Any]:
+    params: Dict[str, Any] = {"limit": 1000}
+    if league == "NCAAF":
+        params["groups"] = 80
+    return params
+
+
+def _extract_team_catalog(data: Dict[str, Any]) -> List[str]:
+    names = []
+    for sport in data.get("sports") or []:
+        for league in sport.get("leagues") or []:
+            for item in league.get("teams") or []:
+                team = item.get("team") or {}
+                name = (
+                    team.get("displayName")
+                    or team.get("shortDisplayName")
+                    or team.get("name")
+                )
+                if name and name not in names:
+                    names.append(name)
+    return names
+
+
+def _fetch_football_team_catalog(
+    league: str, session: requests.Session
+) -> List[str]:
+    params = _football_params(league)
+    params["limit"] = 500 if league == "NCAAF" else 100
+    response = session.get(
+        FOOTBALL_TEAMS_URLS[league], params=params, timeout=20
+    )
+    response.raise_for_status()
+    names = _extract_team_catalog(response.json() or {})
+    logging.info("%s team catalog returned %s teams.", league, len(names))
+    return names
+
+
+def _score_value(value: Any) -> int | None:
+    if isinstance(value, dict):
+        value = value.get("value", value.get("displayValue"))
+    if value in (None, ""):
+        return None
+    score = _to_int(value, -1)
+    return score if score >= 0 else None
+
+
+def _scoreboard_week_number(data: Dict[str, Any]) -> int | None:
+    week = data.get("week")
+    if isinstance(week, dict) and week.get("number") is not None:
+        number = _to_int(week.get("number"), -1)
+        if number >= 0:
+            return number
+
+    for event in data.get("events") or []:
+        event_week = event.get("week")
+        if isinstance(event_week, dict) and event_week.get("number") is not None:
+            number = _to_int(event_week.get("number"), -1)
+            if number >= 0:
+                return number
+
+    return None
+
+
+def _is_completed(event: Dict[str, Any], competition: Dict[str, Any]) -> bool:
+    status = competition.get("status") or event.get("status") or {}
+    status_type = status.get("type") or {}
+    if status_type.get("completed") is True:
+        return True
+    return (status_type.get("name") or "").upper() in {
+        "STATUS_FINAL",
+        "STATUS_FULL_TIME",
+    }
+
+
+def _aggregate_scoreboard_events(
+    events: Iterable[Dict[str, Any]], rows_by_team: Dict[str, List[Any]]
+) -> int:
+    completed_games = 0
+
+    for event in events or []:
+        competitions = event.get("competitions") or []
+        if not competitions:
+            continue
+
+        competition = competitions[0]
+        parsed = []
+        for competitor in competition.get("competitors") or []:
+            team = competitor.get("team") or {}
+            name = (
+                team.get("displayName")
+                or team.get("shortDisplayName")
+                or team.get("name")
+            )
+            if not name:
+                continue
+            rows_by_team.setdefault(name, [name, 0, 0, 0])
+            parsed.append((name, _score_value(competitor.get("score"))))
+
+        if len(parsed) != 2 or not _is_completed(event, competition):
+            continue
+
+        (team_a, score_a), (team_b, score_b) = parsed
+        if score_a is None or score_b is None:
+            logging.warning(
+                "Skipping completed event with missing score: %s vs %s",
+                team_a,
+                team_b,
+            )
+            continue
+
+        row_a = rows_by_team[team_a]
+        row_b = rows_by_team[team_b]
+        row_a[1] += 1
+        row_a[2] += score_a
+        row_a[3] += score_b
+        row_b[1] += 1
+        row_b[2] += score_b
+        row_b[3] += score_a
+        completed_games += 1
+
+    return completed_games
+
+
+def fetch_football_scoreboard_stats(
+    league: str, session: requests.Session | None = None
+) -> List[List[Any]]:
+    if league not in FOOTBALL_SCOREBOARD_URLS:
+        raise ValueError(f"{league} is not a football scoreboard league")
+
+    session = session or _http()
+    rows_by_team: Dict[str, List[Any]] = {}
+
+    # Keep teams that have not played yet on the sheet.
     try:
-        return sh.worksheet(title)
+        for name in _fetch_football_team_catalog(league, session):
+            rows_by_team[name] = [name, 0, 0, 0]
+    except Exception as exc:
+        logging.warning("%s team catalog fetch failed: %s", league, exc)
+
+    params = _football_params(league)
+    current_response = session.get(
+        FOOTBALL_SCOREBOARD_URLS[league], params=params, timeout=20
+    )
+    current_response.raise_for_status()
+    current_data = current_response.json() or {}
+
+    current_week = _scoreboard_week_number(current_data)
+    if current_week is None:
+        raise RuntimeError(f"Could not determine current ESPN week for {league}")
+
+    completed_games = 0
+    for week in range(FOOTBALL_FIRST_WEEK[league], current_week):
+        week_params = dict(params)
+        week_params.update({"week": week, "seasontype": 2})
+        response = session.get(
+            FOOTBALL_SCOREBOARD_URLS[league], params=week_params, timeout=20
+        )
+        response.raise_for_status()
+        completed_games += _aggregate_scoreboard_events(
+            (response.json() or {}).get("events") or [], rows_by_team
+        )
+
+    completed_games += _aggregate_scoreboard_events(
+        current_data.get("events") or [], rows_by_team
+    )
+
+    rows = sorted(rows_by_team.values(), key=lambda row: str(row[0]).lower())
+    teams_with_games = sum(1 for row in rows if _to_int(row[1]) > 0)
+    logging.info(
+        "%s scoreboard stats: %s teams, %s with games, %s completed games "
+        "aggregated through week %s.",
+        league,
+        len(rows),
+        teams_with_games,
+        completed_games,
+        current_week,
+    )
+    return rows
+
+
+def fetch_espn_standings(league: str) -> List[List[Any]]:
+    if league in FOOTBALL_SCOREBOARD_URLS:
+        try:
+            return fetch_football_scoreboard_stats(league)
+        except Exception as exc:
+            logging.exception(
+                "%s scoreboard aggregation failed; trying standings fallback: %s",
+                league,
+                exc,
+            )
+
+    return _fetch_standings_rows(league)
+
+
+def _open_worksheet(spreadsheet, title: str):
+    try:
+        return spreadsheet.worksheet(title)
     except gspread.WorksheetNotFound:
-        return sh.add_worksheet(title=title, rows="1000", cols="10")
+        return spreadsheet.add_worksheet(title=title, rows="1000", cols="10")
+
+
+def _validate_rows_for_sheet(
+    league: str, rows: Iterable[Iterable[Any]]
+) -> List[List[Any]]:
+    normalized = [list(row) for row in rows]
+
+    if not normalized:
+        raise ValueError(f"Refusing to overwrite {league}: scraper returned 0 rows")
+
+    if any(len(row) < 4 or not str(row[0]).strip() for row in normalized):
+        raise ValueError(
+            f"Refusing to overwrite {league}: scraper returned malformed rows"
+        )
+
+    if league in FOOTBALL_SCOREBOARD_URLS:
+        has_stats = any(
+            _to_int(row[1]) > 0
+            or _to_int(row[2]) > 0
+            or _to_int(row[3]) > 0
+            for row in normalized
+        )
+        if not has_stats:
+            raise ValueError(
+                f"Refusing to overwrite {league}: all football stats are zero"
+            )
+
+    return normalized
+
 
 def update_google_sheet(league: str, rows: Iterable[Iterable[Any]]):
-    logging.info(f"Updating Google Sheet for {league}...")
-    creds = _load_credentials()
-    client = gspread.authorize(creds)
-    sh = client.open_by_key(SHEET_ID)
+    rows = _validate_rows_for_sheet(league, rows)
+    logging.info("Updating Google Sheet for %s with %s rows...", league, len(rows))
 
-    ws = _open_worksheet(sh, league)
-    ws.update(HEADER_RANGE, [["Team", "G", "PF", "PA"]])
-    ws.batch_clear([BODY_RANGE])
+    credentials = _load_credentials()
+    client = gspread.authorize(credentials)
+    spreadsheet = client.open_by_key(SHEET_ID)
+    worksheet = _open_worksheet(spreadsheet, league)
 
-    rows = list(rows)
-    if rows:
-        ws.update("A2", rows)
+    # Validate first, clear second. A bad API response can no longer wipe a
+    # previously good sheet.
+    worksheet.update(HEADER_RANGE, [["Team", "G", "PF", "PA"]])
+    worksheet.batch_clear([BODY_RANGE])
+    worksheet.update("A2", rows)
 
-    # Timestamp in America/Chicago (CDT/CST)
     try:
-        now_ct = datetime.now(pytz.timezone("America/Chicago")).strftime("%Y-%m-%d %H:%M:%S %Z")
+        now_ct = datetime.now(pytz.timezone("America/Chicago")).strftime(
+            "%Y-%m-%d %H:%M:%S %Z"
+        )
     except Exception:
         now_ct = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    ws.update("F1", [[f"Last updated: {now_ct}"]])
-    logging.info("✅ Sheet updated.")
+    worksheet.update("F1", [[f"Last updated: {now_ct}"]])
+    logging.info("✅ %s sheet updated with %s teams.", league, len(rows))
 
-# -----------------------------------------------------------------------------
-# Runner
-# -----------------------------------------------------------------------------
+
 def run_scraper():
     summary: Dict[str, int] = {}
-    for lg in ["MLB", "NBA", "NFL", "NCAAF"]:
+
+    for league in ["MLB", "NBA", "NFL", "NCAAF"]:
         try:
-            rows = fetch_espn_standings(lg)
-            summary[lg] = len(rows)
-            update_google_sheet(lg, rows)
-        except Exception as e:
-            logging.exception(f"❌ {lg} scraping failed: {e}")
-            summary[lg] = 0
+            rows = fetch_espn_standings(league)
+            update_google_sheet(league, rows)
+            summary[league] = len(rows)
+        except Exception as exc:
+            logging.exception("❌ %s scraping failed: %s", league, exc)
+            summary[league] = 0
+
     return summary
+
 
 if __name__ == "__main__":
     run_scraper()
