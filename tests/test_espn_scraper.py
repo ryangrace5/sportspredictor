@@ -84,7 +84,11 @@ class EspnScraperTests(unittest.TestCase):
         )
         self.assertEqual(len(rows), 2)
 
-    def test_fetch_football_scoreboard_stats_aggregates_prior_and_current_week(self):
+    def test_local_ncaaf_catalog_contains_texas_tech(self):
+        names = espn_scraper._local_ncaaf_team_catalog()
+        self.assertIn("Texas Tech Red Raiders", names)
+
+    def test_fetch_football_scoreboard_stats_fetches_current_week_explicitly(self):
         catalog = {
             "sports": [
                 {
@@ -101,15 +105,17 @@ class EspnScraperTests(unittest.TestCase):
                 }
             ]
         }
-        current_week = {
+        current_metadata = {
             "week": {"number": 2},
-            "events": [
-                _event("Alpha", None, "Gamma", None, completed=False),
-            ],
+            "events": [],
         }
         week_one = {
             "events": [
                 _event("Alpha", 24, "Beta", 17, completed=True),
+            ]
+        }
+        week_two = {
+            "events": [
                 _event("Gamma", 14, "Delta", 21, completed=True),
             ]
         }
@@ -117,8 +123,9 @@ class EspnScraperTests(unittest.TestCase):
         session = FakeSession(
             [
                 FakeResponse(catalog),
-                FakeResponse(current_week),
+                FakeResponse(current_metadata),
                 FakeResponse(week_one),
+                FakeResponse(week_two),
             ]
         )
 
@@ -132,9 +139,11 @@ class EspnScraperTests(unittest.TestCase):
         self.assertEqual(by_team["Gamma"], ["Gamma", 1, 14, 21])
         self.assertEqual(by_team["Delta"], ["Delta", 1, 21, 14])
 
-        self.assertEqual(len(session.calls), 3)
+        self.assertEqual(len(session.calls), 4)
         self.assertEqual(session.calls[2]["params"]["week"], 1)
         self.assertEqual(session.calls[2]["params"]["seasontype"], 2)
+        self.assertEqual(session.calls[3]["params"]["week"], 2)
+        self.assertEqual(session.calls[3]["params"]["seasontype"], 2)
 
 
 if __name__ == "__main__":
