@@ -1,43 +1,53 @@
 import json
 import re
 from difflib import get_close_matches
-from typing import Dict, List, Tuple, Optional, Iterable
+from typing import Dict, Iterable, List, Optional, Tuple
 
-# Words we can ignore when canonicalizing
 _STOPWORDS = {"university", "univ", "the", "of", "and", "&"}
 _PUNCT_RE = re.compile(r"[^a-z0-9]+")
 
+
 def canonicalize(name: str) -> str:
     s = (name or "").lower().strip()
-    s = s.replace("’", "'")
-    s = s.replace("hawai'i", "hawaii")  # normalize common accent
+    s = s.replace("’", "'").replace("ʻ", "'").replace("`", "'")
+    s = s.replace("hawai'i", "hawaii")
     s = _PUNCT_RE.sub(" ", s)
     parts = [p for p in s.split() if p and p not in _STOPWORDS]
     return " ".join(parts)
+
 
 def load_mapping(path: str) -> Dict[str, dict]:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
+
 def save_mapping(path: str, mapping: Dict[str, dict]) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(mapping, f, indent=2, ensure_ascii=False)
 
-def _best_match(s: str, candidates: Iterable[str], cutoff: float = 0.82) -> Optional[str]:
-    matches = get_close_matches(s, list(candidates), n=1, cutoff=cutoff)
+
+def _best_match(
+    value: str,
+    candidates: Iterable[str],
+    cutoff: float = 0.82,
+) -> Optional[str]:
+    matches = get_close_matches(value, list(candidates), n=1, cutoff=cutoff)
     return matches[0] if matches else None
 
+
 def _build_canonical_index(mapping: Dict[str, dict]):
-    """Builds lookup dicts on canonical forms."""
     canon_primary = {}
     canon_alias = {}
     for primary, meta in mapping.items():
         canon_primary[canonicalize(primary)] = primary
-        for a in meta.get("aliases", []) or []:
-            canon_alias[canonicalize(a)] = primary
+        for alias in meta.get("aliases", []) or []:
+            canon_alias[canonicalize(alias)] = primary
     return canon_primary, canon_alias
 
-# Common, tricky alias sets seen in SportsDB schedules
+
+# Known schedule-name families are checked before fuzzy matching. This prevents
+# old or accidentally truncated mapping entries (for example "Texas Tech Red")
+# from winning over the canonical Google Sheet team name.
 COMMON_ALIASES: Dict[str, List[str]] = {
     "USC": ["Southern California", "USC Trojans"],
     "LSU": ["Louisiana State", "LSU Tigers"],
@@ -54,13 +64,19 @@ COMMON_ALIASES: Dict[str, List[str]] = {
     "Western Kentucky": ["WKU", "Western Kentucky Hilltoppers"],
     "Georgia State": ["Georgia St"],
     "Southeastern Louisiana": ["SE Louisiana", "Southeastern Louisiana Lions"],
-    "Southeast Missouri State": ["SE Missouri State", "Southeast Missouri St", "SE Missouri St", "SEMO"],
+    "Southeast Missouri State": [
+        "SE Missouri State",
+        "Southeast Missouri St",
+        "SE Missouri St",
+        "SEMO",
+    ],
     "Hawaii": ["Hawai'i", "Hawaiʻi", "Hawaii Rainbow Warriors"],
     "Arizona State": ["Arizona St"],
     "Ohio State": ["Ohio St"],
     "Florida State": ["Florida St"],
     "Penn State": ["Penn St"],
     "Texas State": ["Texas State Bobcats"],
+    "Texas Tech": ["Texas Tech Red Raiders", "Texas Tech Red", "TTU"],
     "Air Force": ["Air Force Falcons"],
     "Duquesne": ["Duquesne Dukes"],
     "Bucknell": ["Bucknell Bison"],
@@ -70,7 +86,6 @@ COMMON_ALIASES: Dict[str, List[str]] = {
     "Chattanooga": ["Chattanooga Mocs"],
 }
 
-# Fast map of abbrev => preferred primary label
 ABBREV_TO_PRIMARY = {
     "USC": "USC",
     "LSU": "LSU",
@@ -90,26 +105,83 @@ ABBREV_TO_PRIMARY = {
     "OHIO ST": "Ohio State",
     "ARIZONA ST": "Arizona State",
     "GEORGIA ST": "Georgia State",
+    "TTU": "Texas Tech",
 }
+
 
 def _normalize_to_primary(team_name: str) -> Optional[str]:
     abbr = team_name.upper().replace(".", "").strip()
     return ABBREV_TO_PRIMARY.get(abbr)
 
+
 def _seed_common_aliases(mapping: Dict[str, dict]) -> None:
-    """Make sure COMMON_ALIASES primaries exist and aliases are merged."""
     for primary, aliases in COMMON_ALIASES.items():
-        entry = mapping.get(primary, {"aliases": [], "abbr": "", "stats_key": primary, "PF": None, "PA": None, "PPG": None})
+        entry = mapping.get(
+            primary,
+            {
+                "aliases": [],
+                "abbr": "",
+                "stats_key": primary,
+                "PF": None,
+                "PA": None,
+                "PPG": None,
+            },
+        )
         existing = set(entry.get("aliases", []) or [])
-        for a in aliases:
-            if a not in existing:
-                existing.add(a)
+        existing.update(aliases)
         entry["aliases"] = sorted(existing)
         if not entry.get("stats_key"):
             entry["stats_key"] = primary
-        for fld in ("PF", "PA", "PPG"):
-            entry.setdefault(fld, None)
+        for field in ("PF", "PA", "PPG"):
+            entry.setdefault(field, None)
         mapping[primary] = entry
+
+
+def _sheet_key_for(
+    primary: str,
+    mapping: Dict[str, dict],
+    sheet_names: List[str],
+    cutoff_sheet: float,
+) -> Optional[str]:
+    if not sheet_names:
+        return None
+
+    entry = mapping.get(primary) or {}
+    preferred_names = [primary, entry.get("stats_key")] + list(entry.get("aliases", []) or [])
+    preferred_canon = {canonicalize(name) for name in preferred_names if name}
+
+    for sheet_name in sheet_names:
+        if canonicalize(sheet_name) in preferred_canon:
+            return sheet_name
+
+    sheet_canon = [canonicalize(name) for name in sheet_names]
+    match = _best_match(canonicalize(primary), sheet_canon, cutoff_sheet)
+    if match:
+        return sheet_names[sheet_canon.index(match)]
+    return None
+
+
+def _stats_key_for(
+    primary: str,
+    mapping: Dict[str, dict],
+    sheet_names: List[str],
+    cutoff_sheet: float,
+) -> str:
+    sheet_key = _sheet_key_for(primary, mapping, sheet_names, cutoff_sheet)
+    if sheet_key:
+        return sheet_key
+    if primary in mapping:
+        return mapping[primary].get("stats_key") or primary
+    return primary
+
+
+def _known_family_primary(team_name: str) -> Optional[str]:
+    cn = canonicalize(team_name)
+    for primary, aliases in COMMON_ALIASES.items():
+        if cn in {canonicalize(name) for name in [primary] + aliases}:
+            return primary
+    return None
+
 
 def resolve_team(
     team_name: str,
@@ -118,81 +190,61 @@ def resolve_team(
     cutoff_alias: float = 0.82,
     cutoff_sheet: float = 0.78,
 ) -> Tuple[str, str]:
-    """
-    Returns (primary_key, stats_key).
-    - Uses canonical/alias matching
-    - Understands common abbreviations and accent variants
-    - Optionally aligns to a provided list of sheet_names
+    """Return ``(primary_key, stats_key)`` for a schedule team name.
+
+    Matching order is intentionally conservative: known aliases and explicit
+    disambiguation first, then exact canonical mapping, then fuzzy mapping, and
+    finally fuzzy alignment to Google Sheet names.
     """
     if not team_name:
         return "", ""
 
-    # Abbrev normalization first (USC/LSU/UMass/etc.)
+    sheet_list = list(sheet_names or [])
+
     norm_primary = _normalize_to_primary(team_name)
     if norm_primary:
-        if norm_primary in mapping:
-            return norm_primary, mapping[norm_primary].get("stats_key", norm_primary)
-        return norm_primary, norm_primary
+        return norm_primary, _stats_key_for(
+            norm_primary, mapping, sheet_list, cutoff_sheet
+        )
 
-    # --- Disambiguation guardrails for tricky names ---
     low = team_name.lower()
-
-    # MIAMI: default to Florida unless explicitly Ohio
-    miami_is_ohio = any(x in low for x in [
-        "(oh", " ohio", "redhawks"  # e.g., "Miami (OH)", "Miami Ohio", "Miami RedHawks"
-    ])
     if "miami" in low:
-        if miami_is_ohio:
-            prefer = "Miami (OH)"
-        else:
-            prefer = "Miami (FL)"
-        if prefer in mapping:
-            return prefer, mapping[prefer].get("stats_key", prefer)
-        return prefer, prefer
-    
-    print(f"[resolve_team] raw='{team_name}' → prefer='{prefer}'", flush=True)
+        miami_is_ohio = any(x in low for x in ["(oh", " ohio", "redhawks"])
+        primary = "Miami (OH)" if miami_is_ohio else "Miami (FL)"
+        return primary, _stats_key_for(primary, mapping, sheet_list, cutoff_sheet)
 
-    # --- end guardrails ---
+    family_primary = _known_family_primary(team_name)
+    if family_primary:
+        return family_primary, _stats_key_for(
+            family_primary, mapping, sheet_list, cutoff_sheet
+        )
 
-    # Build canonical indexes
     canon_primary, canon_alias = _build_canonical_index(mapping)
     cn = canonicalize(team_name)
 
-    # Direct canonical hit on primary/alias
     if cn in canon_primary:
-        p = canon_primary[cn]
-        return p, mapping[p].get("stats_key", p)
+        primary = canon_primary[cn]
+        return primary, _stats_key_for(primary, mapping, sheet_list, cutoff_sheet)
+
     if cn in canon_alias:
-        p = canon_alias[cn]
-        return p, mapping[p].get("stats_key", p)
+        primary = canon_alias[cn]
+        return primary, _stats_key_for(primary, mapping, sheet_list, cutoff_sheet)
 
-    # Try known COMMON_ALIASES families even if not in mapping yet
-    for primary, aliases in COMMON_ALIASES.items():
-        fam = [primary] + aliases
-        fam_canon = [canonicalize(x) for x in fam]
-        if cn in fam_canon:
-            if primary in mapping:
-                return primary, mapping[primary].get("stats_key", primary)
-            return primary, primary
-
-    # Fuzzy against known mapping (canonical)
     known_canon = list(canon_primary.keys()) + list(canon_alias.keys())
     match = _best_match(cn, known_canon, cutoff_alias)
     if match:
-        p = canon_primary.get(match) or canon_alias.get(match)
-        return p, mapping[p].get("stats_key", p)
+        primary = canon_primary.get(match) or canon_alias.get(match)
+        return primary, _stats_key_for(primary, mapping, sheet_list, cutoff_sheet)
 
-    # Optionally fuzzy against the sheet names provided
-    if sheet_names:
-        sheet_canon = [canonicalize(s) for s in sheet_names]
-        sm = _best_match(cn, sheet_canon, cutoff_sheet)
-        if sm:
-            idx = sheet_canon.index(sm)
-            stats_key = list(sheet_names)[idx]
+    if sheet_list:
+        sheet_canon = [canonicalize(name) for name in sheet_list]
+        sheet_match = _best_match(cn, sheet_canon, cutoff_sheet)
+        if sheet_match:
+            stats_key = sheet_list[sheet_canon.index(sheet_match)]
             return team_name, stats_key
 
-    # Give up: treat raw as both
     return team_name, team_name
+
 
 def extend_mapping_with_schedule(
     schedule_team_names: Iterable[str],
@@ -200,27 +252,28 @@ def extend_mapping_with_schedule(
     sheet_names: Optional[Iterable[str]] = None,
     default_notes: str = "Fill PF/PA/PPG from your Google Sheet or API.",
 ) -> Dict[str, dict]:
-    # Ensure helpful alias families exist
     _seed_common_aliases(mapping)
+    sheet_list = list(sheet_names or [])
 
     for raw in schedule_team_names:
         if not raw:
             continue
-        primary, stats_key_guess = resolve_team(raw, mapping, sheet_names)
+        primary, stats_key_guess = resolve_team(raw, mapping, sheet_list)
         if primary not in mapping:
             mapping[primary] = {
                 "aliases": [] if raw == primary else [raw],
                 "abbr": "",
                 "stats_key": stats_key_guess or primary,
                 "notes": default_notes,
-                "PF": None, "PA": None, "PPG": None,
+                "PF": None,
+                "PA": None,
+                "PPG": None,
             }
         else:
-            # add the raw name as alias if helpful
             aliases = set(mapping[primary].get("aliases", []) or [])
-            if raw != primary and raw not in aliases:
+            if raw != primary:
                 aliases.add(raw)
-                mapping[primary]["aliases"] = sorted(aliases)
+            mapping[primary]["aliases"] = sorted(aliases)
             if not mapping[primary].get("stats_key"):
                 mapping[primary]["stats_key"] = stats_key_guess or primary
 

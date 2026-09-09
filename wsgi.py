@@ -6,7 +6,7 @@ HEAD to reach Flask needlessly rebuilds models, calls external APIs and writes
 tracking data. This middleware short-circuits those probes before Flask runs.
 """
 
-from app import app as flask_app
+from quality_app import app as flask_app
 
 
 class LightweightProbeMiddleware:

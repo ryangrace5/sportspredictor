@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>BZ Bets — Data Health</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
+  <style>
+    .health-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;margin:20px 0}
+    .health-card{padding:18px;border:1px solid rgba(255,255,255,.12);border-radius:14px;background:rgba(255,255,255,.03)}
+    .health-card h3{margin:0 0 10px}.health-stats{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .health-stats span{display:flex;flex-direction:column}.health-stats small{opacity:.65}.health-stats strong{font-size:1.15rem}
+    .health-list{margin:12px 0 0;padding-left:18px}.health-ok{color:#86efac}.health-warning{color:#fde68a}.health-error{color:#fca5a5}.health-watch{color:#93c5fd}
+    .health-summary{padding:14px 16px;border-radius:12px;background:rgba(255,255,255,.05);margin-top:16px}
+  </style>
+</head>
+<body class="page">
+  <div class="page-wrap">
+    <header class="site-header">
+      <div class="brand">
+        {% if logo_url %}<img src="{{ logo_url }}" alt="BZ Bets" class="brand-img">{% endif %}
+        <div class="brand-sub">Data Integrity Monitor</div>
+      </div>
+      <nav class="site-nav" aria-label="BZ Bets navigation">
+        <a href="{{ url_for('index') }}">Today's Picks</a>
+        <a href="{{ url_for('performance') }}">Performance</a>
+        <a href="{{ url_for('data_health') }}" class="active">Data Health</a>
+      </nav>
+    </header>
+
+    <main class="card">
+      <div class="table-title-row">
+        <div>
+          <span class="eyebrow">Pipeline diagnostics</span>
+          <h2>BZ Bets Data Health</h2>
+        </div>
+        <span class="section-note">Checked {{ health.checked_at }}</span>
+      </div>
+
+      <div class="health-summary">
+        Overall status:
+        <strong class="health-{{ health.overall }}">{{ health.overall|upper }}</strong>
+        · Odds API {% if health.odds_api_enabled %}connected{% else %}not connected{% endif %}
+      </div>
+
+      <div class="health-grid">
+        {% for sport in health.sports %}
+          <section class="health-card">
+            <div class="best-bet-top">
+              <span class="league-badge">{{ sport.league }}</span>
+              <span class="health-{{ sport.status }}">{{ sport.status|upper }}</span>
+            </div>
+            <div class="health-stats">
+              <span><small>Games today</small><strong>{{ sport.schedule_games }}</strong></span>
+              <span><small>Schedule teams</small><strong>{{ sport.schedule_teams }}</strong></span>
+              <span><small>Sheet teams</small><strong>{{ sport.sheet_teams }}</strong></span>
+              <span><small>Matched teams</small><strong>{{ sport.matched_teams }}</strong></span>
+            </div>
+
+            {% if sport.missing_teams %}
+              <h3>Missing from Sheet / mapping</h3>
+              <ul class="health-list">
+                {% for team in sport.missing_teams %}<li>{{ team }}</li>{% endfor %}
+              </ul>
+            {% endif %}
+
+            {% if sport.zero_sample_teams %}
+              <h3>Zero-game sample</h3>
+              <ul class="health-list">
+                {% for team in sport.zero_sample_teams %}<li>{{ team }}</li>{% endfor %}
+              </ul>
+            {% endif %}
+
+            {% if sport.error %}
+              <p class="health-error">{{ sport.error }}</p>
+            {% elif not sport.missing_teams and not sport.zero_sample_teams %}
+              <p class="health-ok">All scheduled teams matched to usable sheet data.</p>
+            {% endif %}
+          </section>
+        {% endfor %}
+      </div>
+    </main>
+  </div>
+</body>
+</html>
