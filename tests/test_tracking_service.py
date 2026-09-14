@@ -7,6 +7,7 @@ from tracking_service import (
     _clv_value,
     _fetch_completed_games,
     _fetch_completed_espn_games,
+    _fetch_completed_nfl_sportsdb_games,
     _freeze_prediction_from_row,
     _grade_pick,
     _mark_missed_pregame,
@@ -121,6 +122,51 @@ class TrackingServiceTests(unittest.TestCase):
         self.assertEqual(game["away_score"], 23.0)
         self.assertEqual(game["home_score"], 24.0)
         self.assertEqual(game["actual_total"], 47.0)
+
+    @patch("tracking_service.requests.get")
+    def test_sportsdb_nfl_fallback_parses_final_local_date(self, mock_get):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "events": [
+                {
+                    "dateEvent": "2026-09-13",
+                    "strTime": "17:00:00",
+                    "strStatus": "FT",
+                    "strAwayTeam": "Tampa Bay Buccaneers",
+                    "strHomeTeam": "Cincinnati Bengals",
+                    "intAwayScore": "27",
+                    "intHomeScore": "33",
+                },
+                {
+                    "dateEvent": "2026-09-14",
+                    "strTime": "00:20:00",
+                    "strStatus": "NS",
+                    "strAwayTeam": "Dallas Cowboys",
+                    "strHomeTeam": "New York Giants",
+                    "intAwayScore": None,
+                    "intHomeScore": None,
+                },
+            ]
+        }
+        mock_get.return_value = response
+
+        games = _fetch_completed_nfl_sportsdb_games("2026-09-13")
+
+        self.assertEqual(len(games), 1)
+        self.assertEqual(games[0]["actual_total"], 60.0)
+        self.assertEqual(mock_get.call_args.kwargs["params"]["s"], 2026)
+
+    @patch("tracking_service._fetch_completed_nfl_sportsdb_games")
+    @patch("tracking_service._fetch_completed_espn_games", return_value=[])
+    def test_nfl_grading_falls_back_when_espn_returns_no_games(
+        self, _mock_espn, mock_sportsdb
+    ):
+        fallback = [{"away_team": "A", "home_team": "B", "actual_total": 42.0}]
+        mock_sportsdb.return_value = fallback
+
+        self.assertEqual(_fetch_completed_games("NFL", "2026-09-13"), fallback)
+        mock_sportsdb.assert_called_once_with("2026-09-13")
 
     def test_started_game_is_frozen_to_original_snapshot(self):
         prediction = {
