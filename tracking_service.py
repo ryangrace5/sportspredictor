@@ -41,6 +41,8 @@ HTTP_HEADERS = {
 
 TEAM_NAME_ALIASES = {
     "oakland athletics": "athletics",
+    "la chargers": "los angeles chargers",
+    "la rams": "los angeles rams",
     "southern california": "usc",
     "louisiana state": "lsu",
     "brigham young": "byu",
@@ -524,14 +526,18 @@ def _fetch_completed_mlb_games(game_date: str) -> Optional[List[Dict[str, Any]]]
 
 
 def _fetch_completed_espn_games(league: str, game_date: str) -> List[Dict[str, Any]]:
+    league = (league or "").strip().upper()
     url = ESPN_SCOREBOARD_URLS.get(league)
     if not url:
         return []
     try:
         ymd = datetime.strptime(game_date, "%Y-%m-%d").strftime("%Y%m%d")
+        params = {"dates": ymd, "limit": 200 if league == "NCAAF" else 100}
+        if league == "NCAAF":
+            params["groups"] = 80
         response = requests.get(
             url,
-            params={"dates": ymd, "limit": 1000},
+            params=params,
             headers=HTTP_HEADERS,
             timeout=15,
         )
@@ -587,6 +593,7 @@ def _fetch_completed_espn_games(league: str, game_date: str) -> List[Dict[str, A
 
 
 def _fetch_completed_games(league: str, game_date: str) -> List[Dict[str, Any]]:
+    league = (league or "").strip().upper()
     if league == "MLB":
         mlb_games = _fetch_completed_mlb_games(game_date)
         if mlb_games is not None:
@@ -605,6 +612,20 @@ def _find_completed_game(
             row_away, game.get("away_team")
         ):
             return game
+
+    # Neutral-site providers occasionally disagree about which team is home.
+    # Match the same two teams and orient the returned scores to the tracked row.
+    for game in games:
+        if _teams_match(row_home, game.get("away_team")) and _teams_match(
+            row_away, game.get("home_team")
+        ):
+            return {
+                **game,
+                "home_team": game.get("away_team"),
+                "away_team": game.get("home_team"),
+                "home_score": game.get("away_score"),
+                "away_score": game.get("home_score"),
+            }
     return None
 
 
@@ -652,16 +673,30 @@ def grade_ungraded_predictions(max_days: int = 14, force: bool = False) -> Dict[
         scoreboard_cache: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
         updates = []
         matched_games = 0
+        pending_by_league: Dict[str, int] = {}
+        graded_by_league: Dict[str, int] = {}
+        unmatched_samples: Dict[Tuple[str, str], List[str]] = {}
         for row in pending:
-            key = (row.get("league") or "", row.get("game_date") or "")
+            league = (row.get("league") or "").strip().upper()
+            game_date = row.get("game_date") or ""
+            pending_by_league[league] = pending_by_league.get(league, 0) + 1
+            key = (league, game_date)
             if key not in scoreboard_cache:
                 scoreboard_cache[key] = _fetch_completed_games(*key)
             game = _find_completed_game(row, scoreboard_cache[key])
             market_total = _to_float(row.get("market_total"))
             if not game or market_total is None:
+                if not game and scoreboard_cache[key]:
+                    samples = unmatched_samples.setdefault(key, [])
+                    if len(samples) < 3:
+                        samples.append(
+                            f"{row.get('away_team_raw') or row.get('away_team')} @ "
+                            f"{row.get('home_team_raw') or row.get('home_team')}"
+                        )
                 continue
 
             matched_games += 1
+            graded_by_league[league] = graded_by_league.get(league, 0) + 1
             actual_total = float(game["actual_total"])
             updates.append({
                 "range": f"'{TRACKING_SHEET}'!Q{row['_sheet_row']}:V{row['_sheet_row']}",
@@ -681,10 +716,20 @@ def grade_ungraded_predictions(max_days: int = 14, force: bool = False) -> Dict[
                 body={"valueInputOption": "RAW", "data": updates},
             ).execute()
 
+        for (league, game_date), samples in unmatched_samples.items():
+            logging.warning(
+                "Unmatched completed-game candidates for %s %s: %s",
+                league,
+                game_date,
+                samples,
+            )
+
         return {
             "checked": len(pending),
             "graded": len(updates),
             "matched_games": matched_games,
+            "pending_by_league": pending_by_league,
+            "graded_by_league": graded_by_league,
         }
     except Exception as exc:
         logging.exception("Prediction grading failed: %s", exc)

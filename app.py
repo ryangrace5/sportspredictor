@@ -367,9 +367,9 @@ def _espn_ncaaf_from_core_events(ymd) -> list:
     return out
 
 
-def get_todays_games(league_name):
+def get_todays_games(league_name, target_date=None):
     league_id = SPORT_LEAGUES[league_name]
-    today_local = datetime.now(LOCAL_TIMEZONE).date()
+    target_date = target_date or datetime.now(LOCAL_TIMEZONE).date()
 
     def _is_game_today_local(game) -> bool:
         if not game.get("dateEvent") or not game.get("strTime"):
@@ -379,7 +379,7 @@ def get_todays_games(league_name):
         try:
             naive = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
             game_dt_local = pytz.utc.localize(naive).astimezone(LOCAL_TIMEZONE)
-            return game_dt_local.date() == today_local
+            return game_dt_local.date() == target_date
         except Exception as e:
             logging.warning(
                 "Could not parse/convert schedule time '%s' for %s: %s",
@@ -391,7 +391,7 @@ def get_todays_games(league_name):
 
     # NCAAF uses ESPN scoreboard/core events.
     if league_name == "NCAAF":
-        ymd = today_local.strftime("%Y%m%d")
+        ymd = target_date.strftime("%Y%m%d")
         espn_games = _espn_ncaaf_from_site_scoreboard(ymd) or _espn_ncaaf_from_core_events(
             ymd
         )
@@ -488,11 +488,11 @@ def get_team_logo(team_short_name, sport):
 # ----------------------------------------------------------------------------- #
 # Prediction pipeline
 # ----------------------------------------------------------------------------- #
-def predict_game_totals(league_name):
+def predict_game_totals(league_name, target_date=None):
     predictions = []
-    today_local = datetime.now(LOCAL_TIMEZONE).date()
+    target_date = target_date or datetime.now(LOCAL_TIMEZONE).date()
 
-    games = get_todays_games(league_name)
+    games = get_todays_games(league_name, target_date=target_date)
     logging.info("%s games fetched: %s", league_name, len(games))
 
     if league_name == "NCAAF":
@@ -557,7 +557,7 @@ def predict_game_totals(league_name):
             except Exception as e:
                 logging.warning("Could not parse/convert time %s: %s", dt_str, e)
 
-        if not game_time_local or game_time_local.date() != today_local:
+        if not game_time_local or game_time_local.date() != target_date:
             continue
 
         name_home, row_home = _find_row(home_raw)
@@ -644,13 +644,29 @@ def admin_daily_get():
 def admin_tracking():
     _check_admin_token()
     all_predictions = []
+    prediction_counts = {}
+    today_local = datetime.now(LOCAL_TIMEZONE).date()
     for sport in ["NBA", "MLB", "NFL", "NCAAF"]:
-        all_predictions.extend(predict_game_totals(sport))
+        # Football schedules are concentrated on Saturday/Sunday. Capturing the
+        # next local day protects the pregame snapshot when a scheduled GitHub
+        # Actions run is delayed until after the first kickoffs.
+        dates = [today_local]
+        if sport in {"NFL", "NCAAF"}:
+            dates.append(today_local + timedelta(days=1))
+
+        sport_predictions = []
+        for target_date in dates:
+            sport_predictions.extend(
+                predict_game_totals(sport, target_date=target_date)
+            )
+        prediction_counts[sport] = len(sport_predictions)
+        all_predictions.extend(sport_predictions)
     tracking = record_prediction_snapshots(all_predictions)
     grading = grade_ungraded_predictions(force=True)
     return jsonify(
         {
             "ok": True,
+            "prediction_counts": prediction_counts,
             "tracking": tracking,
             "grading": grading,
             "ran_at": datetime.now(LOCAL_TIMEZONE).isoformat(),

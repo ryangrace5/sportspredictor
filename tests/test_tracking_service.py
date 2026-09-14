@@ -6,6 +6,7 @@ from tracking_service import (
     _canonical_game_key,
     _clv_value,
     _fetch_completed_games,
+    _fetch_completed_espn_games,
     _freeze_prediction_from_row,
     _grade_pick,
     _mark_missed_pregame,
@@ -87,6 +88,39 @@ class TrackingServiceTests(unittest.TestCase):
         self.assertEqual(games[0]["away_score"], 4.0)
         self.assertEqual(games[0]["home_score"], 6.0)
         self.assertEqual(games[0]["actual_total"], 10.0)
+
+    @patch("tracking_service.requests.get")
+    def test_ncaaf_scoreboard_uses_supported_result_limit(self, mock_get):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"events": []}
+        mock_get.return_value = response
+
+        _fetch_completed_espn_games(" ncaaf ", "2026-09-12")
+
+        params = mock_get.call_args.kwargs["params"]
+        self.assertEqual(params["limit"], 200)
+        self.assertEqual(params["groups"], 80)
+
+    def test_completed_game_matches_neutral_site_home_away_flip(self):
+        from tracking_service import _find_completed_game
+
+        row = {
+            "away_team_raw": "Ohio State Buckeyes",
+            "home_team_raw": "Texas Longhorns",
+        }
+        games = [{
+            "away_team": "Texas Longhorns",
+            "home_team": "Ohio State Buckeyes",
+            "away_score": 24.0,
+            "home_score": 23.0,
+            "actual_total": 47.0,
+        }]
+
+        game = _find_completed_game(row, games)
+        self.assertEqual(game["away_score"], 23.0)
+        self.assertEqual(game["home_score"], 24.0)
+        self.assertEqual(game["actual_total"], 47.0)
 
     def test_started_game_is_frozen_to_original_snapshot(self):
         prediction = {
