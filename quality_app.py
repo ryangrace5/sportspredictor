@@ -50,8 +50,8 @@ def _add_confidence(predictions: List[Dict[str, Any]], league: str) -> List[Dict
     return predictions
 
 
-def predict_game_totals_with_quality(league_name: str):
-    predictions = _ORIGINAL_PREDICT(league_name)
+def predict_game_totals_with_quality(league_name: str, target_date=None):
+    predictions = _ORIGINAL_PREDICT(league_name, target_date=target_date)
     return _add_confidence(predictions, league_name)
 
 
