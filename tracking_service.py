@@ -33,6 +33,10 @@ ESPN_SCOREBOARD_URLS = {
     "NCAAF": "https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard",
 }
 MLB_SCHEDULE_URL = "https://statsapi.mlb.com/api/v1/schedule"
+SPORTSDB_NFL_SCHEDULE_URL = (
+    "https://www.thesportsdb.com/api/v1/json/697039/"
+    "eventsseason.php?id=4391"
+)
 
 HTTP_HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; BZBets/2.3; +https://example.com)",
@@ -592,13 +596,77 @@ def _fetch_completed_espn_games(league: str, game_date: str) -> List[Dict[str, A
     return completed
 
 
+def _fetch_completed_nfl_sportsdb_games(game_date: str) -> List[Dict[str, Any]]:
+    """Fallback NFL results source used when ESPN is unavailable on Render."""
+    try:
+        season = datetime.strptime(game_date, "%Y-%m-%d").year
+        response = requests.get(
+            SPORTSDB_NFL_SCHEDULE_URL,
+            params={"s": season},
+            headers=HTTP_HEADERS,
+            timeout=20,
+        )
+        response.raise_for_status()
+        events = response.json().get("events") or []
+    except Exception as exc:
+        logging.warning(
+            "TheSportsDB NFL grading fetch failed for %s: %s", game_date, exc
+        )
+        return []
+
+    completed = []
+    final_statuses = {"FT", "AOT", "AP", "FINAL", "MATCH FINISHED"}
+    for event in events:
+        status = str(event.get("strStatus") or "").strip().upper()
+        if status not in final_statuses:
+            continue
+
+        event_date = event.get("dateEvent")
+        event_time = event.get("strTime")
+        if not event_date or not event_time:
+            continue
+        try:
+            event_utc = pytz.utc.localize(
+                datetime.strptime(
+                    f"{event_date} {event_time}", "%Y-%m-%d %H:%M:%S"
+                )
+            )
+            if event_utc.astimezone(LOCAL_TIMEZONE).date().isoformat() != game_date:
+                continue
+        except (TypeError, ValueError):
+            continue
+
+        away_name = event.get("strAwayTeam")
+        home_name = event.get("strHomeTeam")
+        away_score = _to_float(event.get("intAwayScore"))
+        home_score = _to_float(event.get("intHomeScore"))
+        if (
+            not away_name
+            or not home_name
+            or away_score is None
+            or home_score is None
+        ):
+            continue
+        completed.append({
+            "home_team": home_name,
+            "away_team": away_name,
+            "home_score": home_score,
+            "away_score": away_score,
+            "actual_total": home_score + away_score,
+        })
+    return completed
+
+
 def _fetch_completed_games(league: str, game_date: str) -> List[Dict[str, Any]]:
     league = (league or "").strip().upper()
     if league == "MLB":
         mlb_games = _fetch_completed_mlb_games(game_date)
         if mlb_games is not None:
             return mlb_games
-    return _fetch_completed_espn_games(league, game_date)
+    espn_games = _fetch_completed_espn_games(league, game_date)
+    if espn_games or league != "NFL":
+        return espn_games
+    return _fetch_completed_nfl_sportsdb_games(game_date)
 
 
 def _find_completed_game(
