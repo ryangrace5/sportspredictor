@@ -17,10 +17,11 @@
           <div class="brand-fallback">BZ BETS</div>
         {% endif %}
         <div class="brand-sub">Market Edge Predictions for {{ date_str }}</div>
+        <span class="section-note">NFL and NCAAF include tomorrow's games.</span>
       </div>
 
       <nav class="site-nav" aria-label="BZ Bets navigation">
-        <a href="{{ url_for('index') }}" class="active">Today's Picks</a>
+        <a href="{{ url_for('index') }}" class="active">Picks</a>
         <a href="{{ url_for('performance') }}">Performance</a>
       </nav>
 
@@ -60,7 +61,7 @@
         <div class="section-heading">
           <div>
             <span class="eyebrow">Largest edges with line shopping</span>
-            <h2 id="bestBetsHeading">🔥 BZ Bets — Best Plays Today</h2>
+            <h2 id="bestBetsHeading">🔥 BZ Bets — Best Plays</h2>
           </div>
           <span class="section-note">Consensus sets the pick; Best Available shows the bettor-friendliest featured line currently returned.</span>
         </div>
@@ -76,6 +77,7 @@
                 <span class="edge-tier">{{ g.edge_tier }}</span>
               </div>
               <div class="best-bet-matchup">{{ g.team1 }} @ {{ g.team2 }}</div>
+              <div class="eyebrow">{{ g.get('display_date') or '' }} · {{ g.get('display_time') or '' }} {{ tz_name }}</div>
               {% if g.get('model_version') == 'mlb_form_pitching_v2' %}
                 <div class="model-chip">MLB v2 · Form + Starters</div>
               {% endif %}
@@ -108,7 +110,7 @@
     <main class="card">
       <div class="table-title-row">
         <div>
-          <span class="eyebrow">Every matchup today</span>
+          <span class="eyebrow">Today's games + tomorrow's football</span>
           <h2>All Games</h2>
         </div>
         {% if odds_enabled %}
@@ -121,7 +123,7 @@
           <thead>
             <tr>
               <th class="th-sport">League</th>
-              <th class="th-time">Time</th>
+              <th class="th-time">Date / Time</th>
               <th class="th-matchup">Matchup</th>
               <th class="th-market">Consensus O/U</th>
               <th class="th-best-book">Best Available</th>
@@ -151,7 +153,10 @@
                   data-tier="{{ g.get('edge_tier') or '' }}"
                   data-search="{{ (home ~ ' ' ~ away ~ ' ' ~ league ~ ' ' ~ pick ~ ' ' ~ best_book ~ ' ' ~ (g.get('model_version') or '') ~ ' ' ~ (g.get('edge_tier') or ''))|lower }}">
                 <td class="cell sport" data-label="League">{{ league }}</td>
-                <td class="cell time" data-label="Time">{{ g.get('display_time') or '' }}</td>
+                <td class="cell time" data-label="Date / Time">
+                  <small>{{ g.get('display_date') or '' }}</small><br>
+                  {{ g.get('display_time') or '' }}
+                </td>
 
                 <td class="cell matchup" data-label="Matchup">
                   <div class="matchup-flex">
@@ -248,7 +253,7 @@
       </div>
 
       {% if not predictions %}
-        <div class="empty-state">No supported games found for today.</div>
+        <div class="empty-state">No supported games found for today or tomorrow's football slate.</div>
       {% endif %}
     </main>
 

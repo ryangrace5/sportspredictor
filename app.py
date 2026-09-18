@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -56,7 +57,8 @@ SPORT_LEAGUES = {
 }
 
 HTTP_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; BZBets/2.0; +https://example.com)",
+    # Keep Requests' normal User-Agent. The old custom override gets a 403
+    # from ESPN's scoreboard even when a normal request succeeds.
     "Accept": "application/json",
 }
 
@@ -273,9 +275,10 @@ def _espn_ncaaf_from_site_scoreboard(ymd) -> list:
             if not comps:
                 continue
             comp = comps[0]
-            iso_dt = comp.get("date")
+            iso_dt = comp.get("date") or ev.get("date")
             try:
                 game_dt_utc = datetime.fromisoformat(iso_dt.replace("Z", "+00:00"))
+                game_dt_utc = game_dt_utc.astimezone(pytz.utc)
                 date_event = game_dt_utc.date().isoformat()
                 str_time = game_dt_utc.strftime("%H:%M:%S")
             except Exception:
@@ -308,63 +311,71 @@ def _espn_ncaaf_from_core_events(ymd) -> list:
         "https://sports.core.api.espn.com/v2/sports/football/leagues/"
         f"college-football/events?dates={ymd}"
     )
-    out = []
+
+    def _read_json(url):
+        # Core API references use HTTP even though HTTPS is supported.
+        response = requests.get(
+            url.replace("http://", "https://", 1), headers=HTTP_HEADERS, timeout=10
+        )
+        response.raise_for_status()
+        return response.json() or {}
+
+    def _expand(obj, field):
+        obj = obj or {}
+        if field not in obj and obj.get("$ref"):
+            return _read_json(obj["$ref"])
+        return obj
+
+    def _game_from_event(item):
+        try:
+            # The event list contains $ref objects, not competitions.
+            event = _expand(item, "competitions")
+            competitions = event.get("competitions") or []
+            if not competitions:
+                return None
+            comp = _expand(competitions[0], "competitors")
+            iso_dt = comp.get("date") or event.get("date")
+            game_dt_utc = datetime.fromisoformat(iso_dt.replace("Z", "+00:00"))
+            game_dt_utc = game_dt_utc.astimezone(pytz.utc)
+
+            competitors = comp.get("competitors") or []
+            home = next((t for t in competitors if t.get("homeAway") == "home"), None)
+            away = next((t for t in competitors if t.get("homeAway") == "away"), None)
+            if not home or not away:
+                return None
+            home_name = _expand(home.get("team"), "displayName").get("displayName")
+            away_name = _expand(away.get("team"), "displayName").get("displayName")
+            if not home_name or not away_name:
+                return None
+
+            return {
+                "strHomeTeam": home_name,
+                "strAwayTeam": away_name,
+                "dateEvent": game_dt_utc.date().isoformat(),
+                "strTime": game_dt_utc.strftime("%H:%M:%S"),
+            }
+        except Exception as exc:
+            logging.warning("ESPN core event failed for %s: %s", item.get("$ref"), exc)
+            return None
+
     try:
-        r = requests.get(base, headers=HTTP_HEADERS, timeout=20)
-        if r.status_code != 200:
-            logging.warning("ESPN core events %s: %s", r.status_code, base)
-            return out
-        items = (r.json() or {}).get("items") or []
-        for item in items:
-            try:
-                comps_ref = (item.get("competitions") or [{}])[0].get("$ref")
-                if not comps_ref:
-                    continue
-                cr = requests.get(comps_ref, headers=HTTP_HEADERS, timeout=20)
-                if cr.status_code != 200:
-                    continue
-                comp = cr.json()
-                iso_dt = comp.get("date")
-                game_dt_utc = datetime.fromisoformat(iso_dt.replace("Z", "+00:00"))
-                date_event = game_dt_utc.date().isoformat()
-                str_time = game_dt_utc.strftime("%H:%M:%S")
+        data = _read_json(base)
+    except Exception as exc:
+        logging.warning("ESPN core events failed: %s", exc)
+        return []
 
-                competitors = comp.get("competitors") or []
-                home = next(
-                    (t for t in competitors if t.get("homeAway") == "home"), None
-                )
-                away = next(
-                    (t for t in competitors if t.get("homeAway") == "away"), None
-                )
-                if not home or not away:
-                    continue
+    items = list(data.get("items") or [])
+    for page in range(2, int(data.get("pageCount") or 1) + 1):
+        try:
+            items.extend(_read_json(f"{base}&page={page}").get("items") or [])
+        except Exception as exc:
+            logging.warning("ESPN core events page %s failed: %s", page, exc)
+            break
 
-                def _team_name(team_obj):
-                    tref = (team_obj or {}).get("team", {}).get("$ref")
-                    if tref:
-                        tr = requests.get(tref, headers=HTTP_HEADERS, timeout=20)
-                        if tr.status_code == 200:
-                            return (tr.json() or {}).get("displayName")
-                    return None
-
-                home_name = _team_name(home)
-                away_name = _team_name(away)
-                if not home_name or not away_name:
-                    continue
-
-                out.append(
-                    {
-                        "strHomeTeam": home_name,
-                        "strAwayTeam": away_name,
-                        "dateEvent": date_event,
-                        "strTime": str_time,
-                    }
-                )
-            except Exception:
-                continue
-    except Exception as e:
-        logging.warning("ESPN core events failed: %s", e)
-    return out
+    # Resolve independent event/team references together so a Saturday slate
+    # does not require hundreds of sequential network requests.
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        return [game for game in pool.map(_game_from_event, items) if game]
 
 
 def get_todays_games(league_name, target_date=None):
@@ -397,7 +408,8 @@ def get_todays_games(league_name, target_date=None):
         )
         games_today = [g for g in espn_games if _is_game_today_local(g)]
         logging.info(
-            "NCAAF ESPN games for today (local): %s",
+            "NCAAF ESPN games for %s (local): %s",
+            target_date,
             [(g.get("strAwayTeam"), g.get("strHomeTeam")) for g in games_today],
         )
         return games_today
@@ -593,6 +605,7 @@ def predict_game_totals(league_name, target_date=None):
                 "team2_logo": get_team_logo(name_home, league_name),
                 "predicted_total": predicted_total,
                 "game_time": game_time_local,
+                "display_date": game_time_local.strftime("%a, %b %d"),
                 "display_time": game_time_local.strftime("%I:%M %p"),
             }
         )

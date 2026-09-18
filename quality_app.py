@@ -70,6 +70,7 @@ def _confidence_panel(best_bets: List[Dict[str, Any]]) -> str:
     cards = []
     for bet in playable:
         matchup = f"{bet.get('team1') or ''} @ {bet.get('team2') or ''}"
+        kickoff = " · ".join(str(bet[key]) for key in ("display_date", "display_time") if bet.get(key))
         score = int(bet.get("confidence_score"))
         label = escape(str(bet.get("confidence_label") or ""))
         note = escape(str(bet.get("confidence_note") or ""))
@@ -83,6 +84,7 @@ def _confidence_panel(best_bets: List[Dict[str, Any]]) -> str:
             f'<span class="edge-tier">BZ Confidence {score}/100</span>'
             '</div>'
             f'<div class="best-bet-matchup">{escape(matchup)}</div>'
+            f'<div class="eyebrow">{escape(kickoff)}</div>'
             f'<div class="best-bet-pick {pick.lower()}">{pick}{line_text}</div>'
             '<div class="best-book-callout"><small>Signal</small>'
             f'<strong>{label}</strong><span>{note}</span></div>'
@@ -143,8 +145,13 @@ def _match_schedule_team(
 
 
 def sport_data_health(league: str) -> Dict[str, Any]:
+    dates = legacy._prediction_dates_for_sport(
+        league, datetime.now(legacy.LOCAL_TIMEZONE).date()
+    )
     result: Dict[str, Any] = {
         "league": league,
+        "date_start": dates[0].isoformat(),
+        "date_end": dates[-1].isoformat(),
         "status": "healthy",
         "schedule_games": 0,
         "schedule_teams": 0,
@@ -156,7 +163,9 @@ def sport_data_health(league: str) -> Dict[str, Any]:
     }
 
     try:
-        games = legacy.get_todays_games(league)
+        games = []
+        for target_date in dates:
+            games.extend(legacy.get_todays_games(league, target_date=target_date))
         stats_df = legacy.fetch_data_from_sheets(league)
         team_list = stats_df.index.tolist()
         schedule_teams = sorted(
