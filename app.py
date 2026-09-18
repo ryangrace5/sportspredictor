@@ -610,6 +610,14 @@ def _check_admin_token():
         abort(401)
 
 
+def _prediction_dates_for_sport(sport, today_local):
+    """Return the local dates that should be shown and tracked for a sport."""
+    dates = [today_local]
+    if sport in {"NFL", "NCAAF"}:
+        dates.append(today_local + timedelta(days=1))
+    return dates
+
+
 @app.post("/admin/daily")
 def admin_daily():
     _check_admin_token()
@@ -650,12 +658,8 @@ def admin_tracking():
         # Football schedules are concentrated on Saturday/Sunday. Capturing the
         # next local day protects the pregame snapshot when a scheduled GitHub
         # Actions run is delayed until after the first kickoffs.
-        dates = [today_local]
-        if sport in {"NFL", "NCAAF"}:
-            dates.append(today_local + timedelta(days=1))
-
         sport_predictions = []
-        for target_date in dates:
+        for target_date in _prediction_dates_for_sport(sport, today_local):
             sport_predictions.extend(
                 predict_game_totals(sport, target_date=target_date)
             )
@@ -691,8 +695,13 @@ def admin_health():
 @app.route("/")
 def index():
     all_predictions = []
+    today_local = datetime.now(LOCAL_TIMEZONE).date()
     for sport in ["NBA", "MLB", "NFL", "NCAAF"]:
-        sport_predictions = predict_game_totals(sport)
+        sport_predictions = []
+        for target_date in _prediction_dates_for_sport(sport, today_local):
+            sport_predictions.extend(
+                predict_game_totals(sport, target_date=target_date)
+            )
         logging.info("%s predictions: %s games", sport, len(sport_predictions))
         all_predictions.extend(sport_predictions)
 
