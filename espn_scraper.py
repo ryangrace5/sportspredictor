@@ -217,7 +217,9 @@ def _fetch_standings_rows(
 
 
 def _football_params(league: str) -> Dict[str, Any]:
-    params: Dict[str, Any] = {"limit": 1000}
+    # ESPN falls back to 25 results when its scoreboard limit exceeds 200.
+    # A supported limit is essential for the full college football slate.
+    params: Dict[str, Any] = {"limit": 200}
     if league == "NCAAF":
         params["groups"] = 80
     return params

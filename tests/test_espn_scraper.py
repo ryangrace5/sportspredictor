@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import espn_scraper
 
@@ -54,6 +55,29 @@ def _event(team_a, score_a, team_b, score_b, completed=True):
 
 
 class EspnScraperTests(unittest.TestCase):
+    @patch("espn_scraper._local_ncaaf_team_catalog", return_value=[])
+    def test_ncaaf_stats_include_games_beyond_espns_25_game_default(self, _mock_catalog):
+        events = [_event(f"Home {i}", 24, f"Away {i}", 17) for i in range(30)]
+
+        class CappedScoreboardSession:
+            def get(self, url, params=None, timeout=None):
+                if url.endswith("/teams"):
+                    return FakeResponse({})
+                if "week" not in params:
+                    return FakeResponse({"week": {"number": 1}})
+                if params["week"] == 0:
+                    return FakeResponse({"events": []})
+                # Reproduce ESPN's observed fallback for unsupported limits.
+                result = events if 25 < params["limit"] <= 200 else events[:25]
+                return FakeResponse({"events": result})
+
+        rows = espn_scraper.fetch_football_scoreboard_stats(
+            "NCAAF", session=CappedScoreboardSession()
+        )
+        by_team = {row[0]: row for row in rows}
+        self.assertEqual(len(by_team), 60)
+        self.assertEqual(by_team["Home 29"], ["Home 29", 1, 24, 17])
+
     def test_aggregate_scoreboard_events_counts_completed_only(self):
         rows = {
             "Alpha": ["Alpha", 0, 0, 0],

@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -527,14 +528,16 @@ def predict_game_totals(league_name, target_date=None):
 
     def _per_game(row):
         try:
-            g = float(row.get("G", 0)) or 0.0
-            pf = float(row.get("PF", 0)) or 0.0
-            pa = float(row.get("PA", 0)) or 0.0
-            if g <= 0:
-                return 0.0, 0.0
+            g = float(row.get("G", 0))
+            pf = float(row.get("PF", 0))
+            pa = float(row.get("PA", 0))
+            if not all(math.isfinite(value) for value in (g, pf, pa)):
+                return None, None
+            if g <= 0 or pf < 0 or pa < 0:
+                return None, None
             return pf / g, pa / g
         except Exception:
-            return 0.0, 0.0
+            return None, None
 
     def _find_row(team_name):
         if league_name == "NCAAF":
@@ -590,6 +593,12 @@ def predict_game_totals(league_name, target_date=None):
 
         home_pfpg, home_papg = _per_game(row_home)
         away_pfpg, away_papg = _per_game(row_away)
+        if None in (home_pfpg, home_papg, away_pfpg, away_papg):
+            logging.warning(
+                "%s skipping %s @ %s: missing or invalid team game sample",
+                league_name, away_raw, home_raw,
+            )
+            continue
         predicted_total = round(
             (home_pfpg + home_papg + away_pfpg + away_papg) / 2.0, 1
         )

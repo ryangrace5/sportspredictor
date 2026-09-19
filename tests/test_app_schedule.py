@@ -112,6 +112,28 @@ class NcaafScheduleTests(unittest.TestCase):
         self.assertEqual(prediction["display_time"], "07:00 PM")
         self.assertEqual(prediction["best_book"], "Test Book")
 
+    @patch("app.save_mapping")
+    @patch("app.ncaaf_map", {})
+    @patch("app.fetch_data_from_sheets")
+    @patch("odds_service.fetch_totals_market")
+    @patch("app.requests.get")
+    def test_missing_team_samples_do_not_generate_artificial_under_picks(
+        self, mock_get, mock_market, mock_stats, _mock_save
+    ):
+        mock_get.return_value = json_response({"events": [
+            scoreboard_event("Texas Tech Red Raiders", "Houston Cougars", "2026-09-19T00:00Z")
+        ]})
+        for sample in (0, -1, float("nan"), float("inf")):
+            with self.subTest(sample=sample):
+                mock_stats.return_value = pd.DataFrame(
+                    {"G": [2, sample], "PF": [80, 0], "PA": [40, 0]},
+                    index=["Texas Tech Red Raiders", "Houston Cougars"],
+                )
+                self.assertEqual(
+                    app_module.predict_game_totals("NCAAF", target_date=date(2026, 9, 18)), []
+                )
+        mock_market.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
