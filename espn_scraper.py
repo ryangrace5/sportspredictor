@@ -2,8 +2,10 @@ import json
 import logging
 import os
 import re
+import unicodedata
 from datetime import datetime
-from typing import Any, Dict, Iterable, List
+from functools import lru_cache
+from typing import Any, Callable, Dict, Iterable, List
 
 import gspread
 import pytz
@@ -47,6 +49,7 @@ BODY_RANGE = "A2:D1000"
 HEADER_RANGE = "A1:D1"
 RECORD_RE = re.compile(r"^\s*(\d+)\s*-\s*(\d+)(?:\s*-\s*(\d+))?\s*$")
 TEAM_LOGOS_PATH = os.path.join(os.path.dirname(__file__), "team_logos.json")
+NCAAF_MAP_PATH = os.path.join(os.path.dirname(__file__), "ncaaf_team_mapping.json")
 
 
 def _load_credentials() -> Credentials:
@@ -274,6 +277,56 @@ def _local_ncaaf_team_catalog() -> List[str]:
         return []
 
 
+def _normalize_ncaaf_name(name: str) -> str:
+    value = (name or "").strip().lower()
+    value = value.replace("(oh)", " ohio ")
+    value = value.replace("’", "'").replace("ʻ", "'").replace("`", "'")
+    value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    value = value.replace("'", "")
+    value = re.sub(r"\bst\.?\b", "state", value)
+    value = re.sub(r"[^a-z0-9]+", " ", value)
+    return " ".join(value.split())
+
+
+@lru_cache(maxsize=1)
+def _ncaaf_curated_alias_index() -> Dict[str, str]:
+    curated = _local_ncaaf_team_catalog()
+    curated_by_key = {_normalize_ncaaf_name(name): name for name in curated}
+    alias_index = dict(curated_by_key)
+
+    try:
+        with open(NCAAF_MAP_PATH, "r", encoding="utf-8") as handle:
+            mapping = json.load(handle) or {}
+    except Exception as exc:
+        logging.warning("NCAAF mapping load failed while building aliases: %s", exc)
+        return alias_index
+
+    for primary, meta in mapping.items():
+        candidates = [primary, meta.get("stats_key"), *(meta.get("aliases") or [])]
+        target = None
+        for candidate in candidates:
+            if not candidate:
+                continue
+            key = _normalize_ncaaf_name(candidate)
+            if key in curated_by_key:
+                target = curated_by_key[key]
+                break
+        if not target:
+            continue
+        for candidate in candidates:
+            if candidate:
+                alias_index.setdefault(_normalize_ncaaf_name(candidate), target)
+
+    return alias_index
+
+
+def _ncaaf_storage_name(raw_name: str) -> str:
+    return _ncaaf_curated_alias_index().get(
+        _normalize_ncaaf_name(raw_name),
+        raw_name,
+    )
+
+
 def _score_value(value: Any) -> int | None:
     if isinstance(value, dict):
         value = value.get("value", value.get("displayValue"))
@@ -312,7 +365,9 @@ def _is_completed(event: Dict[str, Any], competition: Dict[str, Any]) -> bool:
 
 
 def _aggregate_scoreboard_events(
-    events: Iterable[Dict[str, Any]], rows_by_team: Dict[str, List[Any]]
+    events: Iterable[Dict[str, Any]],
+    rows_by_team: Dict[str, List[Any]],
+    team_name_resolver: Callable[[str], str] | None = None,
 ) -> int:
     completed_games = 0
 
@@ -332,6 +387,8 @@ def _aggregate_scoreboard_events(
             )
             if not name:
                 continue
+            if team_name_resolver:
+                name = team_name_resolver(name)
             rows_by_team.setdefault(name, [name, 0, 0, 0])
             parsed.append((name, _score_value(competitor.get("score"))))
 
@@ -369,17 +426,24 @@ def fetch_football_scoreboard_stats(
     session = session or _http()
     rows_by_team: Dict[str, List[Any]] = {}
 
-    # Always seed BZ Bets' curated NCAAF list first. ESPN's catalog is then
-    # merged in so FCS opponents and newly discovered teams are not lost.
-    if league == "NCAAF":
-        for name in _local_ncaaf_team_catalog():
-            rows_by_team[name] = [name, 0, 0, 0]
+    curated_ncaaf_teams = set()
+    team_name_resolver = None
 
-    try:
-        for name in _fetch_football_team_catalog(league, session):
-            rows_by_team.setdefault(name, [name, 0, 0, 0])
-    except Exception as exc:
-        logging.warning("%s team catalog fetch failed: %s", league, exc)
+    if league == "NCAAF":
+        # team_logos.json is the curated FBS roster for BZ Bets. Avoid seeding
+        # ESPN's broader college catalog, which can include FCS/non-model teams.
+        curated_ncaaf_teams = set(_local_ncaaf_team_catalog())
+        if not curated_ncaaf_teams:
+            raise RuntimeError("Curated NCAAF FBS catalog is empty")
+        for name in curated_ncaaf_teams:
+            rows_by_team[name] = [name, 0, 0, 0]
+        team_name_resolver = _ncaaf_storage_name
+    else:
+        try:
+            for name in _fetch_football_team_catalog(league, session):
+                rows_by_team.setdefault(name, [name, 0, 0, 0])
+        except Exception as exc:
+            logging.warning("%s team catalog fetch failed: %s", league, exc)
 
     params = _football_params(league)
     current_response = session.get(
@@ -405,10 +469,23 @@ def fetch_football_scoreboard_stats(
         )
         response.raise_for_status()
         completed_games += _aggregate_scoreboard_events(
-            (response.json() or {}).get("events") or [], rows_by_team
+            (response.json() or {}).get("events") or [],
+            rows_by_team,
+            team_name_resolver=team_name_resolver,
         )
 
-    rows = sorted(rows_by_team.values(), key=lambda row: str(row[0]).lower())
+    if league == "NCAAF":
+        # FCS opponents may exist temporarily so their scores still count
+        # toward the FBS opponent's PF/PA/G, but they never reach the Sheet.
+        rows = [
+            row
+            for name, row in rows_by_team.items()
+            if name in curated_ncaaf_teams
+        ]
+    else:
+        rows = list(rows_by_team.values())
+
+    rows = sorted(rows, key=lambda row: str(row[0]).lower())
     teams_with_games = sum(1 for row in rows if _to_int(row[1]) > 0)
     logging.info(
         "%s scoreboard stats: %s teams, %s with games, %s completed games "
