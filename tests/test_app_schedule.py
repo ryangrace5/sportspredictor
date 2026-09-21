@@ -76,13 +76,12 @@ class NcaafScheduleTests(unittest.TestCase):
         self.assertEqual({g["strHomeTeam"] for g in games}, {"Texas Tech Red Raiders", "Oregon Ducks"})
         self.assertTrue(all(call.args[0].startswith("https://") for call in mock_get.call_args_list))
 
-    @patch("app.save_mapping")
     @patch("app.ncaaf_map", {})
     @patch("app.fetch_data_from_sheets")
     @patch("odds_service.fetch_totals_market")
     @patch("app.requests.get")
     def test_ncaaf_schedule_stats_and_market_produce_a_dated_play(
-        self, mock_get, mock_market, mock_stats, _mock_save
+        self, mock_get, mock_market, mock_stats
     ):
         mock_get.return_value = json_response({"events": [
             scoreboard_event("Texas Tech Red Raiders", "Houston Cougars", "2026-09-19T00:00Z")
@@ -112,13 +111,12 @@ class NcaafScheduleTests(unittest.TestCase):
         self.assertEqual(prediction["display_time"], "07:00 PM")
         self.assertEqual(prediction["best_book"], "Test Book")
 
-    @patch("app.save_mapping")
     @patch("app.ncaaf_map", {})
     @patch("app.fetch_data_from_sheets")
     @patch("odds_service.fetch_totals_market")
     @patch("app.requests.get")
     def test_missing_team_samples_do_not_generate_artificial_under_picks(
-        self, mock_get, mock_market, mock_stats, _mock_save
+        self, mock_get, mock_market, mock_stats
     ):
         mock_get.return_value = json_response({"events": [
             scoreboard_event("Texas Tech Red Raiders", "Houston Cougars", "2026-09-19T00:00Z")
