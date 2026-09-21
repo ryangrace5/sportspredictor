@@ -55,14 +55,14 @@ def _event(team_a, score_a, team_b, score_b, completed=True):
 
 
 class EspnScraperTests(unittest.TestCase):
-    @patch("espn_scraper._local_ncaaf_team_catalog", return_value=[])
-    def test_ncaaf_stats_include_games_beyond_espns_25_game_default(self, _mock_catalog):
+    def test_ncaaf_stats_include_games_beyond_espns_25_game_default(self):
         events = [_event(f"Home {i}", 24, f"Away {i}", 17) for i in range(30)]
+        curated = [f"Home {i}" for i in range(30)] + [
+            f"Away {i}" for i in range(30)
+        ]
 
         class CappedScoreboardSession:
             def get(self, url, params=None, timeout=None):
-                if url.endswith("/teams"):
-                    return FakeResponse({})
                 if "week" not in params:
                     return FakeResponse({"week": {"number": 1}})
                 if params["week"] == 0:
@@ -71,12 +71,48 @@ class EspnScraperTests(unittest.TestCase):
                 result = events if 25 < params["limit"] <= 200 else events[:25]
                 return FakeResponse({"events": result})
 
-        rows = espn_scraper.fetch_football_scoreboard_stats(
-            "NCAAF", session=CappedScoreboardSession()
-        )
+        espn_scraper._ncaaf_curated_alias_index.cache_clear()
+        with patch(
+            "espn_scraper._local_ncaaf_team_catalog",
+            return_value=curated,
+        ):
+            rows = espn_scraper.fetch_football_scoreboard_stats(
+                "NCAAF", session=CappedScoreboardSession()
+            )
+        espn_scraper._ncaaf_curated_alias_index.cache_clear()
+
         by_team = {row[0]: row for row in rows}
         self.assertEqual(len(by_team), 60)
         self.assertEqual(by_team["Home 29"], ["Home 29", 1, 24, 17])
+
+    def test_ncaaf_filters_fcs_rows_but_keeps_fbs_game_stats(self):
+        current_metadata = {"week": {"number": 0}, "events": []}
+        week_zero = {
+            "events": [
+                _event(
+                    "Texas Tech Red Raiders",
+                    38,
+                    "Abilene Christian Wildcats",
+                    14,
+                    completed=True,
+                )
+            ]
+        }
+        session = FakeSession(
+            [FakeResponse(current_metadata), FakeResponse(week_zero)]
+        )
+
+        espn_scraper._ncaaf_curated_alias_index.cache_clear()
+        with patch(
+            "espn_scraper._local_ncaaf_team_catalog",
+            return_value=["Texas Tech Red Raiders"],
+        ):
+            rows = espn_scraper.fetch_football_scoreboard_stats(
+                "NCAAF", session=session
+            )
+        espn_scraper._ncaaf_curated_alias_index.cache_clear()
+
+        self.assertEqual(rows, [["Texas Tech Red Raiders", 1, 38, 14]])
 
     def test_aggregate_scoreboard_events_counts_completed_only(self):
         rows = {
