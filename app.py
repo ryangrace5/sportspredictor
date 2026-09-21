@@ -23,7 +23,7 @@ from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
 from espn_scraper import run_scraper
-from ncaaf_team_matching_helper import extend_mapping_with_schedule, resolve_team, save_mapping
+from ncaaf_team_matching_helper import resolve_team
 from odds_service import enrich_predictions_with_odds, odds_api_enabled, select_best_bets
 from tracking_service import (
     get_performance_dashboard,
@@ -508,19 +508,9 @@ def predict_game_totals(league_name, target_date=None):
     games = get_todays_games(league_name, target_date=target_date)
     logging.info("%s games fetched: %s", league_name, len(games))
 
-    if league_name == "NCAAF":
-        global ncaaf_map
-        schedule_teams = {g.get("strHomeTeam") for g in games} | {
-            g.get("strAwayTeam") for g in games
-        }
-        schedule_teams = {t for t in schedule_teams if t}
-        try:
-            ncaaf_map = extend_mapping_with_schedule(
-                schedule_teams, ncaaf_map, sheet_names=None
-            )
-            save_mapping(NCAAF_MAP_PATH, ncaaf_map)
-        except Exception as e:
-            logging.warning("NCAAF mapping extend failed: %s", e)
+    # Resolve NCAAF schedule names against the curated Sheet/mapping below.
+    # Do not auto-save every ESPN opponent into ncaaf_team_mapping.json; that
+    # previously caused FCS/non-model teams to accumulate in the app.
 
     stats_df = fetch_data_from_sheets(league_name)
     team_list = stats_df.index.tolist()
