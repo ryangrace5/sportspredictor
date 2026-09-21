@@ -1570,30 +1570,6 @@
     "PA": null,
     "PPG": null
   },
-  "Southeastern Louisiana": {
-    "aliases": [
-      "SE Louisiana",
-      "Southeastern Louisiana Lions"
-    ],
-    "abbr": "",
-    "stats_key": "Southeastern Louisiana",
-    "PF": null,
-    "PA": null,
-    "PPG": null
-  },
-  "Southeast Missouri State": {
-    "aliases": [
-      "SE Missouri St",
-      "SE Missouri State",
-      "SEMO",
-      "Southeast Missouri St"
-    ],
-    "abbr": "",
-    "stats_key": "Southeast Missouri State",
-    "PF": null,
-    "PA": null,
-    "PPG": null
-  },
   "Hawaii": {
     "aliases": [
       "Hawai'i",
@@ -1632,66 +1608,6 @@
     ],
     "abbr": "",
     "stats_key": "Texas State",
-    "PF": null,
-    "PA": null,
-    "PPG": null
-  },
-  "Duquesne": {
-    "aliases": [
-      "Duquesne Dukes"
-    ],
-    "abbr": "",
-    "stats_key": "Duquesne",
-    "PF": null,
-    "PA": null,
-    "PPG": null
-  },
-  "Bucknell": {
-    "aliases": [
-      "Bucknell Bison"
-    ],
-    "abbr": "",
-    "stats_key": "Bucknell",
-    "PF": null,
-    "PA": null,
-    "PPG": null
-  },
-  "Portland State": {
-    "aliases": [
-      "Portland State Vikings"
-    ],
-    "abbr": "",
-    "stats_key": "Portland State",
-    "PF": null,
-    "PA": null,
-    "PPG": null
-  },
-  "Northern Arizona": {
-    "aliases": [
-      "Northern Arizona Lumberjacks"
-    ],
-    "abbr": "",
-    "stats_key": "Northern Arizona",
-    "PF": null,
-    "PA": null,
-    "PPG": null
-  },
-  "North Dakota": {
-    "aliases": [
-      "North Dakota Fighting Hawks"
-    ],
-    "abbr": "",
-    "stats_key": "North Dakota",
-    "PF": null,
-    "PA": null,
-    "PPG": null
-  },
-  "Chattanooga": {
-    "aliases": [
-      "Chattanooga Mocs"
-    ],
-    "abbr": "",
-    "stats_key": "Chattanooga",
     "PF": null,
     "PA": null,
     "PPG": null
