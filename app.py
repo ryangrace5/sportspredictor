@@ -261,7 +261,7 @@ def fetch_data_from_sheets(league_tab: str) -> pd.DataFrame:
 def _espn_ncaaf_from_site_scoreboard(ymd) -> list:
     url = (
         "https://site.api.espn.com/apis/site/v2/sports/football/"
-        f"college-football/scoreboard?dates={ymd}"
+        f"college-football/scoreboard?dates={ymd}&groups=80&limit=200"
     )
     try:
         r = requests.get(url, headers=HTTP_HEADERS, timeout=20)
