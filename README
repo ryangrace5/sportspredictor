@@ -73,6 +73,10 @@ BZ Bets tracks:
 
 The `/performance` dashboard shows overall record, hit rate, units, league breakdowns, edge tiers, and model performance.
 
+NCAAF results use a backup ESPN scoreboard when the primary feed is unavailable.
+Pending college picks are retried throughout the season, including bowl games
+across the year boundary. Grading preserves the original pregame pick and line.
+
 ## Tech Stack
 
 * Python / Flask

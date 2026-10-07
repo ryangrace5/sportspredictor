@@ -32,6 +32,10 @@ ESPN_SCOREBOARD_URLS = {
     "NFL": "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard",
     "NCAAF": "https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard",
 }
+NCAAF_SCOREBOARD_FALLBACK_URL = (
+    "https://site.web.api.espn.com/apis/site/v2/sports/football/"
+    "college-football/scoreboard"
+)
 MLB_SCHEDULE_URL = "https://statsapi.mlb.com/api/v1/schedule"
 SPORTSDB_NFL_SCHEDULE_URL = (
     "https://www.thesportsdb.com/api/v1/json/697039/"
@@ -39,7 +43,8 @@ SPORTSDB_NFL_SCHEDULE_URL = (
 )
 
 HTTP_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; BZBets/2.3; +https://example.com)",
+    # Use Requests' normal User-Agent, as the working schedule fetcher does.
+    # ESPN can reject the old custom BZBets bot header on Render.
     "Accept": "application/json",
 }
 
@@ -471,7 +476,8 @@ def record_prediction_snapshots(predictions: Iterable[Dict[str, Any]]) -> Dict[s
 def _score_from_competitor(competitor: Dict[str, Any]) -> Optional[float]:
     raw = competitor.get("score")
     if isinstance(raw, dict):
-        raw = raw.get("value") or raw.get("displayValue")
+        value = raw.get("value")
+        raw = value if value is not None else raw.get("displayValue")
     return _to_float(raw)
 
 
@@ -536,26 +542,33 @@ def _fetch_completed_espn_games(league: str, game_date: str) -> List[Dict[str, A
         return []
     try:
         ymd = datetime.strptime(game_date, "%Y-%m-%d").strftime("%Y%m%d")
-        params = {"dates": ymd, "limit": 200 if league == "NCAAF" else 100}
-        if league == "NCAAF":
-            params["groups"] = 80
-        response = requests.get(
-            url,
-            params=params,
-            headers=HTTP_HEADERS,
-            timeout=15,
-        )
-        response.raise_for_status()
-        events = response.json().get("events") or []
-    except Exception as exc:
-        logging.warning(
-            "ESPN scoreboard grading fetch failed for %s %s: %s",
-            league,
-            game_date,
-            exc,
-        )
+    except ValueError:
         return []
 
+    params = {"dates": ymd, "limit": 200 if league == "NCAAF" else 100}
+    urls = [url]
+    if league == "NCAAF":
+        params["groups"] = 80
+        urls.append(NCAAF_SCOREBOARD_FALLBACK_URL)
+
+    for scoreboard_url in urls:
+        try:
+            response = requests.get(
+                scoreboard_url, params=params, headers=HTTP_HEADERS, timeout=15
+            )
+            response.raise_for_status()
+            games = _completed_espn_events(response.json().get("events") or [])
+            if games:
+                return games
+        except Exception as exc:
+            logging.warning(
+                "ESPN scoreboard grading fetch failed for %s %s (%s): %s",
+                league, game_date, scoreboard_url, exc,
+            )
+    return []
+
+
+def _completed_espn_events(events: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     completed = []
     for event in events:
         status_type = ((event.get("status") or {}).get("type") or {})
@@ -725,6 +738,11 @@ def grade_ungraded_predictions(max_days: int = 14, force: bool = False) -> Dict[
         service = _sheets_service()
         rows = _read_tracking_rows(service, dedupe=True)
         cutoff = now.date() - timedelta(days=max_days)
+        # A score-provider outage must not strand college picks after 14 days.
+        # Revisit saved pregame snapshots throughout the current NCAAF season,
+        # including the previous calendar year's games during bowl season.
+        ncaaf_season_year = now.year if now.month >= 8 else now.year - 1
+        ncaaf_cutoff = min(cutoff, datetime(ncaaf_season_year, 8, 1).date())
         pending = []
         for row in rows:
             if (row.get("status") or "").upper() == "FINAL":
@@ -735,7 +753,9 @@ def grade_ungraded_predictions(max_days: int = 14, force: bool = False) -> Dict[
                 ).date()
             except ValueError:
                 continue
-            if cutoff <= game_date <= now.date():
+            league = (row.get("league") or "").strip().upper()
+            row_cutoff = ncaaf_cutoff if league == "NCAAF" else cutoff
+            if row_cutoff <= game_date <= now.date():
                 pending.append(row)
 
         scoreboard_cache: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
