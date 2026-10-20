@@ -1,10 +1,12 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from odds_service import (
     _extract_consensus_total,
     _select_best_offer,
     enrich_predictions_with_odds,
+    _find_market_for_prediction,
 )
 
 
@@ -91,6 +93,43 @@ class OddsServiceTests(unittest.TestCase):
         best = _select_best_offer(offers, "OVER")
         self.assertEqual(best["bookmaker"], "Book C")
         self.assertEqual(best["price"], 100)
+
+    def test_repeated_matchup_from_wrong_date_cannot_supply_market(self):
+        t = datetime(2026, 10, 20, 23, 0, tzinfo=timezone.utc)
+        prediction = {
+            "home_team_raw": "Houston Astros",
+            "away_team_raw": "Texas Rangers",
+            "game_time": t,
+        }
+        wrong_date = [{
+            "home_team": "Houston Astros",
+            "away_team": "Texas Rangers",
+            "commence_time": t + timedelta(days=1),
+        }]
+        self.assertIsNone(_find_market_for_prediction(prediction, wrong_date))
+
+    def test_correct_game_time_can_be_verified(self):
+        t = datetime(2026, 10, 20, 23, 0, tzinfo=timezone.utc)
+        market = {
+            "event_id": "test",
+            "home_team": "Houston Astros",
+            "away_team": "Texas Rangers",
+            "commence_time": t + timedelta(minutes=15),
+            **_extract_consensus_total(self.event),
+        }
+        prediction = {
+            "sport": "MLB",
+            "team1": "Texas Rangers",
+            "team2": "Houston Astros",
+            "home_team_raw": "Houston Astros",
+            "away_team_raw": "Texas Rangers",
+            "game_time": t,
+            "predicted_total": 10.0,
+        }
+        with patch("odds_service.fetch_totals_market", return_value=[market]):
+            with patch("odds_service.enrich_mlb_predictions", side_effect=lambda x: x):
+                enriched = enrich_predictions_with_odds([prediction], "MLB")
+        self.assertTrue(enriched[0]["market_time_verified"])
 
     @patch("odds_service.enrich_mlb_predictions", side_effect=lambda predictions: predictions)
     @patch("odds_service.fetch_totals_market")
