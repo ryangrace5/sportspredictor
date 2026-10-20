@@ -77,6 +77,16 @@ def confidence_for_prediction(
         score += 3.0
 
     score = int(round(min(max(score, 50.0), 95.0)))
+
+    # NBA opening-week forecasts borrow from last regular season.
+    # An apparent large edge cannot by itself justify a "high" confidence
+    # rating before teams build a current regular-season sample.
+    if prediction.get("model_version") == "nba_regular_season_blend_v1":
+        current_games = _to_float(prediction.get("nba_current_games"))
+        current_games = max(current_games or 0.0, 0.0)
+        if current_games < 10:
+            score = min(score, int(round(55 + 3 * current_games)))
+
     if score >= 85:
         label = "High"
     elif score >= 72:
@@ -89,6 +99,12 @@ def confidence_for_prediction(
         note_parts.append(f"min team sample {int(sample_games)} games")
     if books:
         note_parts.append(f"{int(books)} books")
+    if prediction.get("model_version") == "nba_regular_season_blend_v1":
+        games = _to_float(prediction.get("nba_current_games")) or 0.0
+        prior_fraction = _to_float(prediction.get("nba_prior_fraction")) or 0.0
+        note_parts.append(f"{int(games)} current regular-season games")
+        if prior_fraction > 0:
+            note_parts.append(f"{int(round(prior_fraction * 100))}% prior-season baseline")
 
     return {
         "confidence_score": score,
