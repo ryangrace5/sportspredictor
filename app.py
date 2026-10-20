@@ -223,9 +223,23 @@ def fetch_data_from_sheets(league_tab: str) -> pd.DataFrame:
     )
     service = build("sheets", "v4", credentials=creds, cache_discovery=False)
 
-    rng = f"{league_tab}!A1:D1000"
+    rng = f"{league_tab}!A1:F1000" if league_tab in {"NBA", "NBA_PRIOR"} else f"{league_tab}!A1:D1000"
     res = service.spreadsheets().values().get(spreadsheetId=sheet_id, range=rng).execute()
     values = res.get("values", [])
+
+    # The prior NBA tab contained preseason numbers. Never trust a legacy or
+    # stale sheet unless the scraper explicitly tagged it as regular-season.
+    if league_tab in {"NBA", "NBA_PRIOR"}:
+        season_end = int(_nba_season_for_date(datetime.now(LOCAL_TIMEZONE).date()).split("-")[1])
+        expected = (
+            f"NBA_REGULAR_{season_end}"
+            if league_tab == "NBA"
+            else f"NBA_PRIOR_REGULAR_{season_end - 1}"
+        )
+        header = str(values[0][5]) if values and len(values[0]) > 5 else ""
+        if expected not in header:
+            logging.warning("%s source tag missing/outdated; expected %s", league_tab, expected)
+            values = []
 
     if not values or len(values) < 2:
         df_empty = pd.DataFrame(
@@ -524,6 +538,48 @@ def get_team_logo(team_short_name, sport):
 # ----------------------------------------------------------------------------- #
 # Prediction pipeline
 # ----------------------------------------------------------------------------- #
+NBA_BLEND_GAMES = 10
+
+
+def _nba_blended_team_rates(current_row, prior_row):
+    """Return (PF/G, PA/G, current regular-season games, current weight).
+
+    Use only season-type-2 standings, never the preseason totals. The first
+    game starts at 10% current / 90% last season; game 10 reaches 100% current.
+    Without a reliable previous-season baseline, skip low-sample predictions.
+    """
+    def _rates(row):
+        if row is None:
+            return None
+        try:
+            g, pf, pa = (float(row.get(key, 0)) for key in ("G", "PF", "PA"))
+            if not all(math.isfinite(x) for x in (g, pf, pa)):
+                return None
+            if g <= 0 or pf < 0 or pa < 0:
+                return None
+            return (pf / g, pa / g, g)
+        except (TypeError, ValueError, AttributeError):
+            return None
+
+    current = _rates(current_row)
+    prior = _rates(prior_row)
+    current_games = current[2] if current else 0.0
+    weight = min(current_games / NBA_BLEND_GAMES, 1.0)
+
+    if prior is None and (current is None or current_games < NBA_BLEND_GAMES):
+        return None
+    if current is None:
+        return (*prior[:2], 0.0, 0.0)
+    if prior is None or weight >= 1.0:
+        return (*current[:2], current_games, 1.0)
+    return (
+        round(prior[0] * (1 - weight) + current[0] * weight, 6),
+        round(prior[1] * (1 - weight) + current[1] * weight, 6),
+        current_games,
+        weight,
+    )
+
+
 def predict_game_totals(league_name, target_date=None):
     predictions = []
     target_date = target_date or datetime.now(LOCAL_TIMEZONE).date()
@@ -536,7 +592,19 @@ def predict_game_totals(league_name, target_date=None):
     # previously caused FCS/non-model teams to accumulate in the app.
 
     stats_df = fetch_data_from_sheets(league_name)
-    team_list = stats_df.index.tolist()
+    prior_df = None
+    if league_name == "NBA":
+        try:
+            prior_df = fetch_data_from_sheets("NBA_PRIOR")
+        except Exception as exc:
+            logging.warning("NBA baseline sheet unavailable: %s", exc)
+            return []
+        if stats_df.empty or prior_df.empty:
+            logging.warning("NBA regular-season inputs not yet refreshed; withholding picks")
+            return []
+        team_list = list(stats_df.index.union(prior_df.index))
+    else:
+        team_list = stats_df.index.tolist()
     seen_matchups = set()
 
     def _per_game(row):
@@ -565,7 +633,11 @@ def predict_game_totals(league_name, target_date=None):
             )
             return None, None
         try:
-            return match, stats_df.loc[match]
+            if match in stats_df.index:
+                return match, stats_df.loc[match]
+            if league_name == "NBA" and match in prior_df.index:
+                return match, pd.Series({"G": 0, "PF": 0, "PA": 0})
+            return None, None
         except KeyError:
             return None, None
 
@@ -604,8 +676,23 @@ def predict_game_totals(league_name, target_date=None):
             continue
         seen_matchups.add(matchup_key)
 
-        home_pfpg, home_papg = _per_game(row_home)
-        away_pfpg, away_papg = _per_game(row_away)
+        nba_sample_games = None
+        nba_prior_fraction = None
+        if league_name == "NBA":
+            prior_home = prior_df.loc[name_home] if name_home in prior_df.index else None
+            prior_away = prior_df.loc[name_away] if name_away in prior_df.index else None
+            home_rates = _nba_blended_team_rates(row_home, prior_home)
+            away_rates = _nba_blended_team_rates(row_away, prior_away)
+            if home_rates is None or away_rates is None:
+                logging.warning("NBA missing regular-season baseline: %s @ %s", away_raw, home_raw)
+                continue
+            home_pfpg, home_papg = home_rates[:2]
+            away_pfpg, away_papg = away_rates[:2]
+            nba_sample_games = min(home_rates[2], away_rates[2])
+            nba_prior_fraction = max(1 - home_rates[3], 1 - away_rates[3])
+        else:
+            home_pfpg, home_papg = _per_game(row_home)
+            away_pfpg, away_papg = _per_game(row_away)
         if None in (home_pfpg, home_papg, away_pfpg, away_papg):
             logging.warning(
                 "%s skipping %s @ %s: missing or invalid team game sample",
@@ -629,6 +716,11 @@ def predict_game_totals(league_name, target_date=None):
                 "game_time": game_time_local,
                 "display_date": game_time_local.strftime("%a, %b %d"),
                 "display_time": game_time_local.strftime("%I:%M %p"),
+                **({
+                    "model_version": "nba_regular_season_blend_v1",
+                    "nba_current_games": nba_sample_games,
+                    "nba_prior_fraction": round(nba_prior_fraction, 3),
+                } if league_name == "NBA" else {}),
             }
         )
 
