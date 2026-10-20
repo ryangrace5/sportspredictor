@@ -87,6 +87,36 @@ game when the previous regular-season stats are available.
 Both currently use:
 `Predicted Total = (Home PF/G + Home PA/G + Away PF/G + Away PA/G) / 2`
 
+## Conservative Best Plays Shortlist
+
+All four league models still display projections and can be paper-tracked, but
+not every projected OVER/UNDER is recommended in the **Best Plays** section.
+The app currently labels NBA, NFL, and NCAAF signals **WATCH ONLY** while
+their models are evaluated further. There are no graded NBA results yet, and
+the tracked 2026 NFL/NCAAF model signals have not demonstrated a reliable
+advantage over the sportsbook line.
+
+Only MLB's form-and-pitching v2 model currently qualifies for promotion, and
+only with all of the following:
+
+* At least 30 current-season games for each team
+* At least 5 independent books contributing a totals market
+* A verified matchup kickoff within 6 hours of the sportsbook market
+* An identifiable best sportsbook, line, and American price from -125 to +125
+* BZ Confidence >=72/100 (a quality signal, not win probability)
+
+Best Plays now sorts by data-quality score and market depth, rather than
+automatically putting the biggest modeled edge first. If no projection
+passes the checks, the site explicitly shows **no qualifying Best Plays**.
+This is intentional; don't force a wager from a noisy slate.
+
+The model's underlying picks are still recorded in the `Predictions`
+worksheet for *paper tracking*, including non-promoted signals. The existing
+Performance dashboard describes hypothetical predictions, **not verified
+wagers**. The policy is deliberately conservative while additional
+out-of-sample evidence is collected; it has not been shown to improve results
+on future games.
+
 ## Performance Tracking
 
 Predictions are stored in a `Predictions` worksheet in Google Sheets.
