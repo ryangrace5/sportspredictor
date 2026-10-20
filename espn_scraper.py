@@ -186,11 +186,14 @@ def _standings_entries(data: Dict[str, Any]):
 
 
 def _fetch_standings_rows(
-    league: str, session: requests.Session | None = None
+    league: str, session: requests.Session | None = None, season: int | None = None
 ) -> List[List[Any]]:
     logging.info("Fetching ESPN standings JSON for %s...", league)
     session = session or _http()
-    response = session.get(ESPN_STANDINGS_URLS[league], timeout=20)
+    url = ESPN_STANDINGS_URLS[league]
+    if season is not None:
+        url = f"{url}?season={season}"
+    response = session.get(url, timeout=20)
     response.raise_for_status()
 
     rows_by_team: Dict[str, List[Any]] = {}
@@ -510,7 +513,41 @@ def fetch_espn_standings(league: str) -> List[List[Any]]:
                 exc,
             )
 
-    return _fetch_standings_rows(league)
+    rows = _fetch_standings_rows(league)
+    if league != "NBA":
+        return rows
+
+    # The new NBA season begins with 0-game standings. Do not erase the
+    # prediction inputs with zeros; retain last season's per-team averages
+    # until each team has played a game in the current season.
+    if rows and all(_to_int(row[1]) > 0 for row in rows):
+        return rows
+
+    today = datetime.now(pytz.timezone("America/Chicago"))
+    previous_season_end = today.year if today.month >= 7 else today.year - 1
+    try:
+        previous_rows = _fetch_standings_rows("NBA", season=previous_season_end)
+        prior_by_team = {
+            row[0]: row for row in previous_rows if _to_int(row[1]) > 0
+        }
+        if not prior_by_team:
+            logging.warning("NBA prior season %s has no usable statistics", previous_season_end)
+            return rows
+        if not rows:
+            return list(prior_by_team.values())
+        updated = [
+            prior_by_team.get(row[0], row) if _to_int(row[1]) <= 0 else row
+            for row in rows
+        ]
+        logging.info(
+            "NBA early-season fallback: %s teams using %s season stats",
+            sum(_to_int(row[1]) <= 0 and row[0] in prior_by_team for row in rows),
+            previous_season_end,
+        )
+        return updated
+    except Exception as exc:
+        logging.warning("NBA previous-season stats unavailable: %s", exc)
+        return rows
 
 
 def _open_worksheet(spreadsheet, title: str):
@@ -532,6 +569,9 @@ def _validate_rows_for_sheet(
         raise ValueError(
             f"Refusing to overwrite {league}: scraper returned malformed rows"
         )
+
+    if league == "NBA" and not any(_to_int(row[1]) > 0 for row in normalized):
+        raise ValueError("Refusing to overwrite NBA: all team samples are zero")
 
     if league in FOOTBALL_SCOREBOARD_URLS:
         has_stats = any(
