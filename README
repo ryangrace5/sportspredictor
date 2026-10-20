@@ -49,13 +49,43 @@ Probable starter ERA is then used as a small adjustment to the final total.
 
 MLB games also include a **Why this total?** section so you can see what went into the prediction.
 
-## Other Sports
+## NBA Totals (Regular-Season Only)
 
-NBA, NFL, and NCAAF currently use:
+ESPN standings requests explicitly set the NBA season and `seasontype=2`
+(regular season). **Preseason data is never used in NBA projections.**
 
+The automated scraper writes two separate Google Sheets tabs:
+
+* `NBA`: current NBA regular-season PF/PA/G (0 games before opening night)
+* `NBA_PRIOR`: previous NBA regular-season PF/PA/G
+
+Both tabs are marked with a season-source tag. The app refuses to use the
+previous untagged `NBA` sheet containing preseason numbers. After this change
+is deployed, run the **BZ Bets Tracking Cron** GitHub Action (or the admin daily
+refresh) once to populate both tabs; otherwise NBA picks remain withheld.
+
+For each team, blend its previous-season and current-season points scored /
+allowed per game as the current season progresses:
+
+* 0 games: 100% previous regular season
+* 5 games: 50% previous, 50% current
+* 10+ games: 100% current regular season
+
+`Current weight = min(current games / 10, 1)`
+
+The projected matchup total remains
+`(home PF/G + home PA/G + away PF/G + away PA/G) / 2`.
+
+To avoid misleading opening-week signals, confidence is capped at 55/100
+before either team has played a regular-season game and gradually relaxes to
+85/100 after 10 games. Confidence is a data-quality signal, **not a win
+probability**. NBA picks can still appear before their first regular-season
+game when the previous regular-season stats are available.
+
+## NFL and NCAAF
+
+Both currently use:
 `Predicted Total = (Home PF/G + Home PA/G + Away PF/G + Away PA/G) / 2`
-
-Sport-specific models are planned for future versions.
 
 ## Performance Tracking
 

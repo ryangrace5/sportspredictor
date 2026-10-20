@@ -186,13 +186,21 @@ def _standings_entries(data: Dict[str, Any]):
 
 
 def _fetch_standings_rows(
-    league: str, session: requests.Session | None = None, season: int | None = None
+    league: str,
+    session: requests.Session | None = None,
+    season: int | None = None,
+    season_type: int | None = None,
 ) -> List[List[Any]]:
     logging.info("Fetching ESPN standings JSON for %s...", league)
     session = session or _http()
     url = ESPN_STANDINGS_URLS[league]
+    query = []
     if season is not None:
-        url = f"{url}?season={season}"
+        query.append(f"season={season}")
+    if season_type is not None:
+        query.append(f"seasontype={season_type}")
+    if query:
+        url += "?" + "&".join(query)
     response = session.get(url, timeout=20)
     response.raise_for_status()
 
@@ -502,7 +510,52 @@ def fetch_football_scoreboard_stats(
     return rows
 
 
+def _nba_current_season_end() -> int:
+    now = datetime.now(pytz.timezone("America/Chicago"))
+    return now.year + 1 if now.month >= 7 else now.year
+
+
+def fetch_nba_regular_season_rows() -> tuple[List[List[Any]], List[List[Any]], int]:
+    """Separate regular-season inputs: current NBA season and previous NBA season.
+
+    ESPN's default standings endpoint can include preseason totals in October.
+    Fetch explicit season + type 2, and refuse to publish unverified samples.
+    """
+    end_year = _nba_current_season_end()
+    prior = _fetch_standings_rows("NBA", season=end_year - 1, season_type=2)
+    if len(prior) < 25 or any(
+        _to_int(row[1]) <= 0 or _to_int(row[2]) <= 0
+        for row in prior
+    ):
+        raise ValueError("NBA prior regular-season stats unavailable or incomplete")
+
+    current = _fetch_standings_rows("NBA", season=end_year, season_type=2)
+    if current and len(current) < 25:
+        raise ValueError("NBA current regular-season team list is incomplete")
+
+    prior_names = {row[0] for row in prior}
+    current_by_team = {row[0]: row for row in current}
+    # Include 0-game teams so opening-night matchups can use the prior-season
+    # baseline. Current season PF/PA/G remain zero, never preseason totals.
+    complete_current = [
+        current_by_team.get(name, [name, 0, 0, 0])
+        for name in sorted(prior_names | set(current_by_team))
+    ]
+    if not complete_current:
+        raise ValueError("NBA regular-season team list is empty")
+    for row in complete_current:
+        g, pf, pa = map(_to_int, row[1:4])
+        if g < 0 or pf < 0 or pa < 0 or (g == 0 and (pf > 0 or pa > 0)):
+            raise ValueError("NBA current regular-season samples are malformed")
+
+    return complete_current, prior, end_year
+
+
 def fetch_espn_standings(league: str) -> List[List[Any]]:
+    if league == "NBA":
+        current, _, _ = fetch_nba_regular_season_rows()
+        return current
+
     if league in FOOTBALL_SCOREBOARD_URLS:
         try:
             return fetch_football_scoreboard_stats(league)
@@ -513,41 +566,7 @@ def fetch_espn_standings(league: str) -> List[List[Any]]:
                 exc,
             )
 
-    rows = _fetch_standings_rows(league)
-    if league != "NBA":
-        return rows
-
-    # The new NBA season begins with 0-game standings. Do not erase the
-    # prediction inputs with zeros; retain last season's per-team averages
-    # until each team has played a game in the current season.
-    if rows and all(_to_int(row[1]) > 0 for row in rows):
-        return rows
-
-    today = datetime.now(pytz.timezone("America/Chicago"))
-    previous_season_end = today.year if today.month >= 7 else today.year - 1
-    try:
-        previous_rows = _fetch_standings_rows("NBA", season=previous_season_end)
-        prior_by_team = {
-            row[0]: row for row in previous_rows if _to_int(row[1]) > 0
-        }
-        if not prior_by_team:
-            logging.warning("NBA prior season %s has no usable statistics", previous_season_end)
-            return rows
-        if not rows:
-            return list(prior_by_team.values())
-        updated = [
-            prior_by_team.get(row[0], row) if _to_int(row[1]) <= 0 else row
-            for row in rows
-        ]
-        logging.info(
-            "NBA early-season fallback: %s teams using %s season stats",
-            sum(_to_int(row[1]) <= 0 and row[0] in prior_by_team for row in rows),
-            previous_season_end,
-        )
-        return updated
-    except Exception as exc:
-        logging.warning("NBA previous-season stats unavailable: %s", exc)
-        return rows
+    return _fetch_standings_rows(league)
 
 
 def _open_worksheet(spreadsheet, title: str):
@@ -558,7 +577,9 @@ def _open_worksheet(spreadsheet, title: str):
 
 
 def _validate_rows_for_sheet(
-    league: str, rows: Iterable[Iterable[Any]]
+    league: str,
+    rows: Iterable[Iterable[Any]],
+    allow_zero_nba: bool = False,
 ) -> List[List[Any]]:
     normalized = [list(row) for row in rows]
 
@@ -570,7 +591,7 @@ def _validate_rows_for_sheet(
             f"Refusing to overwrite {league}: scraper returned malformed rows"
         )
 
-    if league == "NBA" and not any(_to_int(row[1]) > 0 for row in normalized):
+    if league == "NBA" and not allow_zero_nba and not any(_to_int(row[1]) > 0 for row in normalized):
         raise ValueError("Refusing to overwrite NBA: all team samples are zero")
 
     if league in FOOTBALL_SCOREBOARD_URLS:
@@ -588,8 +609,14 @@ def _validate_rows_for_sheet(
     return normalized
 
 
-def update_google_sheet(league: str, rows: Iterable[Iterable[Any]]):
-    rows = _validate_rows_for_sheet(league, rows)
+def update_google_sheet(
+    league: str,
+    rows: Iterable[Iterable[Any]],
+    *,
+    source_tag: str | None = None,
+    allow_zero_nba: bool = False,
+):
+    rows = _validate_rows_for_sheet(league, rows, allow_zero_nba=allow_zero_nba)
     logging.info("Updating Google Sheet for %s with %s rows...", league, len(rows))
 
     credentials = _load_credentials()
@@ -610,7 +637,8 @@ def update_google_sheet(league: str, rows: Iterable[Iterable[Any]]):
     except Exception:
         now_ct = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    worksheet.update("F1", [[f"Last updated: {now_ct}"]])
+    provenance = f" | {source_tag}" if source_tag else ""
+    worksheet.update("F1", [[f"Last updated: {now_ct}{provenance}"]])
     logging.info("✅ %s sheet updated with %s teams.", league, len(rows))
 
 
@@ -619,6 +647,20 @@ def run_scraper():
 
     for league in ["MLB", "NBA", "NFL", "NCAAF"]:
         try:
+            if league == "NBA":
+                current, prior, end_year = fetch_nba_regular_season_rows()
+                # Publish the baseline first. A failed prior-season fetch must
+                # never let preseason stats remain a valid projection source.
+                update_google_sheet(
+                    "NBA_PRIOR", prior, source_tag=f"NBA_PRIOR_REGULAR_{end_year - 1}"
+                )
+                update_google_sheet(
+                    "NBA", current,
+                    source_tag=f"NBA_REGULAR_{end_year}",
+                    allow_zero_nba=True,
+                )
+                summary[league] = len(current)
+                continue
             rows = fetch_espn_standings(league)
             update_google_sheet(league, rows)
             summary[league] = len(rows)

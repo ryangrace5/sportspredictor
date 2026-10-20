@@ -55,31 +55,49 @@ def _event(team_a, score_a, team_b, score_b, completed=True):
 
 
 class EspnScraperTests(unittest.TestCase):
+    @patch("espn_scraper._nba_current_season_end", return_value=2027)
     @patch("espn_scraper._fetch_standings_rows")
-    def test_nba_uses_previous_year_for_teams_without_current_games(self, mock_rows):
-        current = [
-            ["Boston Celtics", 0, 0, 0],
-            ["Houston Rockets", 1, 110, 102],
-        ]
-        previous = [
-            ["Boston Celtics", 82, 9800, 9400],
-            ["Houston Rockets", 82, 9200, 9000],
-        ]
-        mock_rows.side_effect = [current, previous]
+    def test_nba_separates_regular_season_baseline_from_preseason(
+        self, mock_rows, _mock_year
+    ):
+        prior = [[f"Team {i}", 82, 9000, 8800] for i in range(30)]
+        current = [[f"Team {i}", 0, 0, 0] for i in range(30)]
+        current[0] = ["Team 0", 1, 120, 116]
+        mock_rows.side_effect = [prior, current]
 
-        rows = espn_scraper.fetch_espn_standings("NBA")
+        regular, baseline, season_end = espn_scraper.fetch_nba_regular_season_rows()
 
-        self.assertEqual(rows[0], previous[0])
-        self.assertEqual(rows[1], current[1])
-        self.assertEqual(mock_rows.call_count, 2)
-        self.assertEqual(mock_rows.call_args.kwargs.keys(), {"season"})
+        self.assertEqual(season_end, 2027)
+        self.assertEqual(baseline, prior)
+        self.assertEqual(regular[0], current[0])
+        self.assertEqual(regular[1], ["Team 1", 0, 0, 0])
+        self.assertEqual(
+            [call.kwargs for call in mock_rows.call_args_list],
+            [
+                {"season": 2026, "season_type": 2},
+                {"season": 2027, "season_type": 2},
+            ],
+        )
+
+    def test_nba_espn_standings_url_explicitly_requests_regular_season(self):
+        session = FakeSession([FakeResponse({"children": []})])
+        espn_scraper._fetch_standings_rows(
+            "NBA", session=session, season=2027, season_type=2
+        )
+        url = session.calls[0]["url"]
+        self.assertIn("season=2027", url)
+        self.assertIn("seasontype=2", url)
 
     def test_nba_rejects_all_zero_samples_before_sheet_overwrite(self):
         with self.assertRaisesRegex(ValueError, "all team samples are zero"):
             espn_scraper._validate_rows_for_sheet(
                 "NBA", [["Boston Celtics", 0, 0, 0]]
             )
-
+        self.assertEqual(
+            espn_scraper._validate_rows_for_sheet(
+                "NBA", [["Boston Celtics", 0, 0, 0]], allow_zero_nba=True
+            )[0][1], 0
+        )
 
     def test_ncaaf_stats_include_games_beyond_espns_25_game_default(self):
         events = [_event(f"Home {i}", 24, f"Away {i}", 17) for i in range(30)]

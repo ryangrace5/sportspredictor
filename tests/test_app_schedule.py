@@ -60,6 +60,75 @@ class NbaScheduleTests(unittest.TestCase):
         self.assertEqual(app_module._nba_season_for_date(date(2027, 10, 1)), "2027-2028")
 
 
+class NbaBlendedTotalsTests(unittest.TestCase):
+    def test_prior_regular_season_is_entire_baseline_before_tipoff(self):
+        baseline = {"G": 82, "PF": 9840, "PA": 9430}
+        result = app_module._nba_blended_team_rates(
+            {"G": 0, "PF": 0, "PA": 0}, baseline
+        )
+        self.assertAlmostEqual(result[0], 120.0)
+        self.assertAlmostEqual(result[1], 115.0)
+        self.assertEqual(result[2:], (0.0, 0.0))
+
+    def test_five_current_games_blend_equally_and_ten_use_current_only(self):
+        prior = {"G": 82, "PF": 9840, "PA": 9430}
+        halfway = app_module._nba_blended_team_rates(
+            {"G": 5, "PF": 550, "PA": 525}, prior
+        )
+        self.assertAlmostEqual(halfway[0], 115.0)
+        self.assertAlmostEqual(halfway[1], 110.0)
+        self.assertEqual(halfway[3], 0.5)
+
+        full = app_module._nba_blended_team_rates(
+            {"G": 10, "PF": 1100, "PA": 1050}, prior
+        )
+        self.assertEqual(full, (110.0, 105.0, 10.0, 1.0))
+
+    def test_withholds_thin_sample_if_previous_baseline_is_missing(self):
+        self.assertIsNone(
+            app_module._nba_blended_team_rates(
+                {"G": 0, "PF": 0, "PA": 0}, None
+            )
+        )
+        self.assertIsNone(
+            app_module._nba_blended_team_rates(
+                {"G": 3, "PF": 360, "PA": 345}, None
+            )
+        )
+
+    @patch("app.enrich_predictions_with_odds", side_effect=lambda predictions, _: predictions)
+    @patch("app.fetch_data_from_sheets")
+    @patch("app.get_todays_games")
+    def test_nba_prediction_uses_last_regular_season_on_opening_day(
+        self, mock_games, mock_sheet, _mock_odds
+    ):
+        mock_games.return_value = [{
+            "strHomeTeam": "Boston Celtics",
+            "strAwayTeam": "Detroit Pistons",
+            "dateEvent": "2026-10-20",
+            "strTime": "20:00:00",
+        }]
+        current = pd.DataFrame(
+            {"G": [0, 0], "PF": [0, 0], "PA": [0, 0]},
+            index=["Boston Celtics", "Detroit Pistons"],
+        )
+        prior = pd.DataFrame(
+            {"G": [82, 82], "PF": [9840, 9430], "PA": [9430, 9020]},
+            index=["Boston Celtics", "Detroit Pistons"],
+        )
+        mock_sheet.side_effect = lambda tab: prior if tab == "NBA_PRIOR" else current
+
+        result = app_module.predict_game_totals("NBA", target_date=date(2026, 10, 20))
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["predicted_total"], round(
+            (9840 / 82 + 9430 / 82 + 9430 / 82 + 9020 / 82) / 2, 1
+        ))
+        self.assertEqual(result[0]["nba_current_games"], 0)
+        self.assertEqual(result[0]["nba_prior_fraction"], 1.0)
+        self.assertEqual(result[0]["model_version"], "nba_regular_season_blend_v1")
+
+
 class NcaafScheduleTests(unittest.TestCase):
     @patch("app.requests.get")
     def test_schedule_keeps_evening_games_on_their_chicago_date(self, mock_get):
