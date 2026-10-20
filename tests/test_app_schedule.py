@@ -25,6 +25,41 @@ def json_response(data, status=200):
     return response
 
 
+class NbaScheduleTests(unittest.TestCase):
+    @patch("app.requests.get")
+    def test_nba_daily_espn_scoreboard_returns_chicago_evening_game(self, mock_get):
+        mock_get.return_value = json_response({"events": [
+            scoreboard_event("San Antonio Spurs", "Oklahoma City Thunder", "2026-10-21T02:30Z")
+        ]})
+
+        games = app_module.get_todays_games("NBA", target_date=date(2026, 10, 20))
+
+        self.assertEqual(len(games), 1)
+        self.assertEqual(games[0]["strHomeTeam"], "San Antonio Spurs")
+        self.assertEqual(games[0]["dateEvent"], "2026-10-21")
+        self.assertIn("nba/scoreboard?dates=20261020", mock_get.call_args.args[0])
+
+    @patch("app.requests.get")
+    def test_nba_sportsdb_fallback_uses_correct_2026_season(self, mock_get):
+        def get(url, **kwargs):
+            if "espn.com" in url:
+                return json_response({"events": []})
+            self.assertIn("s=2026-2027", url)
+            return json_response({"events": [{
+                "strHomeTeam": "San Antonio Spurs",
+                "strAwayTeam": "Oklahoma City Thunder",
+                "dateEvent": "2026-10-21",
+                "strTime": "02:30:00",
+            }]})
+
+        mock_get.side_effect = get
+        games = app_module.get_todays_games("NBA", target_date=date(2026, 10, 20))
+
+        self.assertEqual(len(games), 1)
+        self.assertEqual(app_module._nba_season_for_date(date(2027, 3, 1)), "2026-2027")
+        self.assertEqual(app_module._nba_season_for_date(date(2027, 10, 1)), "2027-2028")
+
+
 class NcaafScheduleTests(unittest.TestCase):
     @patch("app.requests.get")
     def test_schedule_keeps_evening_games_on_their_chicago_date(self, mock_get):
