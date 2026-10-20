@@ -1,6 +1,4 @@
 import unittest
-from copy import deepcopy
-
 from bet_policy import assess_best_play
 from odds_service import select_best_bets
 
@@ -32,7 +30,9 @@ class ConservativeBestPlaysTests(unittest.TestCase):
                 candidate = dict(self.good, sport=league)
                 allowed, reason = assess_best_play(candidate)
                 self.assertFalse(allowed)
-                self.assertIn("only", reason if league != "NBA" else "only")
+                self.assertTrue(
+                    "track record" in reason or "research-only" in reason
+                )
 
     def test_baseline_only_mlb_is_not_promoted(self):
         allowed, reason = assess_best_play(
