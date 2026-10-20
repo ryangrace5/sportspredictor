@@ -256,13 +256,21 @@ def fetch_data_from_sheets(league_tab: str) -> pd.DataFrame:
 
 
 # ----------------------------------------------------------------------------- #
-# Schedules: SportsDB primary + ESPN fallback (NCAAF)
+# Schedules: ESPN for NBA/NCAAF; SportsDB fallback for pro leagues
 # ----------------------------------------------------------------------------- #
-def _espn_ncaaf_from_site_scoreboard(ymd) -> list:
-    url = (
-        "https://site.api.espn.com/apis/site/v2/sports/football/"
-        f"college-football/scoreboard?dates={ymd}&groups=80&limit=200"
-    )
+def _espn_from_site_scoreboard(ymd, league_name="NCAAF") -> list:
+    if league_name == "NBA":
+        url = (
+            "https://site.api.espn.com/apis/site/v2/sports/basketball/"
+            f"nba/scoreboard?dates={ymd}"
+        )
+    elif league_name == "NCAAF":
+        url = (
+            "https://site.api.espn.com/apis/site/v2/sports/football/"
+            f"college-football/scoreboard?dates={ymd}&groups=80&limit=200"
+        )
+    else:
+        raise ValueError(f"Unsupported ESPN scoreboard league: {league_name}")
     try:
         r = requests.get(url, headers=HTTP_HEADERS, timeout=20)
         if r.status_code != 200:
@@ -379,6 +387,12 @@ def _espn_ncaaf_from_core_events(ymd) -> list:
         return [game for game in pool.map(_game_from_event, items) if game]
 
 
+def _nba_season_for_date(target_date):
+    """NBA season spans two years and begins before the October tipoff."""
+    start = target_date.year if target_date.month >= 7 else target_date.year - 1
+    return f"{start}-{start + 1}"
+
+
 def get_todays_games(league_name, target_date=None):
     league_id = SPORT_LEAGUES[league_name]
     target_date = target_date or datetime.now(LOCAL_TIMEZONE).date()
@@ -401,10 +415,19 @@ def get_todays_games(league_name, target_date=None):
             )
             return False
 
+    # NBA's daily ESPN scoreboard is more complete than the season schedule
+    # available through the free SportsDB feed. Use SportsDB only as fallback.
+    if league_name == "NBA":
+        ymd = target_date.strftime("%Y%m%d")
+        espn_games = _espn_from_site_scoreboard(ymd, "NBA")
+        games_today = [g for g in espn_games if _is_game_today_local(g)]
+        if games_today:
+            return games_today
+
     # NCAAF uses ESPN scoreboard/core events.
     if league_name == "NCAAF":
         ymd = target_date.strftime("%Y%m%d")
-        espn_games = _espn_ncaaf_from_site_scoreboard(ymd) or _espn_ncaaf_from_core_events(
+        espn_games = _espn_from_site_scoreboard(ymd) or _espn_ncaaf_from_core_events(
             ymd
         )
         games_today = [g for g in espn_games if _is_game_today_local(g)]
@@ -417,7 +440,7 @@ def get_todays_games(league_name, target_date=None):
 
     # Pro leagues: SportsDB season feed.
     season_map = {
-        "NBA": "2025-2026",
+        "NBA": _nba_season_for_date(target_date),
         "MLB": "2026",
         "NFL": "2026",
     }
