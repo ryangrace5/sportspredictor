@@ -289,6 +289,10 @@ def _find_market_for_prediction(
             except Exception:
                 time_diff = None
 
+        # Reject clearly wrong repeat matchups from different dates. An unknown
+        # timestamp can still supply a research line, but cannot be shortlisted.
+        if time_diff is not None and time_diff > 6 * 60 * 60:
+            continue
         candidates.append((time_diff, market))
 
     if not candidates:
@@ -363,6 +367,15 @@ def enrich_predictions_with_odds(
         if not market:
             continue
 
+        game_time = prediction.get("game_time")
+        market_time = market.get("commence_time")
+        prediction["market_time_verified"] = (
+            isinstance(game_time, datetime)
+            and isinstance(market_time, datetime)
+            and abs((game_time.astimezone(timezone.utc) - market_time.astimezone(timezone.utc)).total_seconds())
+            <= 6 * 60 * 60
+        )
+
         market_total = float(market["market_total"])
         predicted_total = float(prediction["predicted_total"])
         edge = round(predicted_total - market_total, 1)
@@ -412,10 +425,18 @@ def select_best_bets(
     playable = [
         p
         for p in predictions
-        if p.get("pick") in {"OVER", "UNDER"} and p.get("abs_edge") is not None
+        if p.get("pick") in {"OVER", "UNDER"}
+        and p.get("abs_edge") is not None
+        and p.get("best_play_eligible", False)
     ]
     return sorted(
         playable,
-        key=lambda p: p.get("best_abs_edge") if p.get("best_abs_edge") is not None else p.get("abs_edge", 0),
+        # Avoid ranking solely by the biggest model-vs-market disagreement:
+        # extreme edges can signal a poor model or stale inputs.
+        key=lambda p: (
+            p.get("confidence_score") or 0,
+            p.get("bookmaker_count") or 0,
+            p.get("best_abs_edge") if p.get("best_abs_edge") is not None else (p.get("abs_edge") or 0),
+        ),
         reverse=True,
     )[:limit]
