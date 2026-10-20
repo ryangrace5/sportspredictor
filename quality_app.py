@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from flask import jsonify, render_template
 
 import app as legacy
+from bet_policy import assess_best_play
 from quality_metrics import confidence_for_prediction
 
 app = legacy.app
@@ -47,6 +48,9 @@ def _add_confidence(predictions: List[Dict[str, Any]], league: str) -> List[Dict
         min_games = _minimum_team_games(league, prediction, stats_df)
         prediction["sample_games"] = min_games
         prediction.update(confidence_for_prediction(prediction, min_games))
+        eligible, reason = assess_best_play(prediction)
+        prediction["best_play_eligible"] = eligible
+        prediction["best_play_reason"] = reason
     return predictions
 
 
