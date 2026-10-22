@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>BZ Bets — Market Edge Predictions</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <!-- Phone-only layout: desktop styling stays unchanged. -->
+  <link rel="stylesheet" media="(max-width: 760px)" href="{{ url_for('static', filename='mobile.css') }}">
   <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
 </head>
 <body class="page">
