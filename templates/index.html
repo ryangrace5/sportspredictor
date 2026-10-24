@@ -31,9 +31,15 @@
 
       {% if not odds_enabled %}
         <div class="status-banner">
-          Sportsbook lines are ready but not connected yet. Add <code>THE_ODDS_API_KEY</code> to enable market edges and picks.
+          No sportsbook feed is connected. Add <code>THE_ODDS_API_KEY</code> to enable market edges and picks.
+        </div>
+      {% elif predictions | selectattr('pick', 'equalto', 'NO LINE') | list %}
+        <div class="status-banner">
+          Some games have no verified sportsbook line (the odds feed may be unavailable or out of credits).
+          BZ Total still shows the model projection; no Over/Under pick is generated without a market line.
         </div>
       {% endif %}
+      <span class="section-note">Sportsbook odds are periodically refreshed to conserve API credits, not live. Always verify current lines and prices before betting.</span>
 
       <div class="controls">
         <label class="sr-only" for="searchInput">Search by team name</label>
@@ -212,6 +218,9 @@
                   {% if market is not none %}
                     <strong>{{ "%.1f"|format(market) }}</strong>
                     <small>{{ g.get('bookmaker_count', 0) }} book{% if g.get('bookmaker_count', 0) != 1 %}s{% endif %}</small>
+                    {% if g.get('market_fetched_at') %}
+                      <small title="Cached sportsbook snapshot">As of {{ g.get('market_fetched_at').strftime('%b %d %I:%M %p UTC') }}</small>
+                    {% endif %}
                   {% else %}
                     <span class="muted">—</span>
                   {% endif %}
@@ -260,6 +269,8 @@
                       {{ pick }} {{ "%.1f"|format(best_line) }}
                     {% elif pick in ['OVER', 'UNDER'] and market is not none %}
                       {{ pick }} {{ "%.1f"|format(market) }}
+                    {% elif pick == 'NO LINE' and total is not none %}
+                      PROJECTION ONLY
                     {% else %}
                       {{ pick }}
                     {% endif %}
