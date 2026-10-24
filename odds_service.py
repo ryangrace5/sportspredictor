@@ -38,8 +38,33 @@ TEAM_NAME_ALIASES = {
     "hawaii": "hawaii",
 }
 
+# One Gunicorn worker serves the app. Keeping per-league odds in memory avoids
+# burning a free-plan credit on every page view or tracking request.
+# Four leagues refreshed at most three times per day ~= 360 credits/30 days,
+# before restarts and other API usage (the free allowance is 500 credits/month).
 _cache: Dict[str, Any] = {}
-_CACHE_TTL = timedelta(minutes=5)
+_CACHE_TTL = timedelta(hours=8)
+_FAILURE_RETRY = timedelta(minutes=30)
+_failed_until: Dict[str, datetime] = {}
+_out_of_credits_until: Optional[datetime] = None
+
+
+def _next_month_start(now: datetime) -> datetime:
+    """The Odds API's monthly allowance resets at 00:00 UTC on day 1."""
+    if now.month == 12:
+        return datetime(now.year + 1, 1, 1, tzinfo=timezone.utc)
+    return datetime(now.year, now.month + 1, 1, tzinfo=timezone.utc)
+
+
+def _error_code(response: requests.Response) -> str:
+    """Safely log a provider error code, never the API key or request URL."""
+    try:
+        payload = response.json()
+        if isinstance(payload, dict):
+            return str(payload.get("error_code") or payload.get("errorCode") or "unknown")
+    except (ValueError, TypeError):
+        pass
+    return "unknown"
 
 
 def odds_api_enabled() -> bool:
@@ -211,6 +236,8 @@ def _select_best_offer(offers: Iterable[Dict[str, Any]], pick: str) -> Optional[
 
 
 def fetch_totals_market(league: str) -> List[Dict[str, Any]]:
+    global _out_of_credits_until
+
     api_key = os.environ.get("THE_ODDS_API_KEY", "").strip()
     sport_key = SPORT_KEYS.get(league)
     if not api_key or not sport_key:
@@ -222,6 +249,13 @@ def fetch_totals_market(league: str) -> List[Dict[str, Any]]:
         fetched_at, events = cached
         if now - fetched_at < _CACHE_TTL:
             return events
+
+    # Don't repeatedly hit the provider on failed pages or after exhaustion.
+    # Expired odds are never used as a fallback: NO LINE is safer than stale picks.
+    if _out_of_credits_until and now < _out_of_credits_until:
+        return []
+    if now < _failed_until.get(league, datetime.min.replace(tzinfo=timezone.utc)):
+        return []
 
     params = {
         "apiKey": api_key,
@@ -241,8 +275,27 @@ def fetch_totals_market(league: str) -> List[Dict[str, Any]]:
         remaining = response.headers.get("x-requests-remaining")
         if remaining is not None:
             logging.info("Odds API credits remaining after %s fetch: %s", league, remaining)
+            try:
+                if int(remaining) <= 0:
+                    _out_of_credits_until = _next_month_start(now)
+                    logging.warning("Odds API monthly allowance exhausted; pausing until %s", _out_of_credits_until.isoformat())
+            except (TypeError, ValueError):
+                pass
+    except requests.HTTPError as exc:
+        failed_response = exc.response
+        status = failed_response.status_code if failed_response is not None else "unknown"
+        code = _error_code(failed_response) if failed_response is not None else "unknown"
+        if code.upper() == "OUT_OF_USAGE_CREDITS":
+            _out_of_credits_until = _next_month_start(now)
+            logging.warning("Odds API allowance exhausted; retry after %s", _out_of_credits_until.isoformat())
+        else:
+            _failed_until[league] = now + _FAILURE_RETRY
+            logging.warning("Odds API fetch failed for %s: HTTP %s (%s); retry later", league, status, code)
+        return []
     except Exception as exc:
-        logging.warning("Odds API fetch failed for %s: %s", league, exc)
+        _failed_until[league] = now + _FAILURE_RETRY
+        # The request exception can contain the URL, including the secret key.
+        logging.warning("Odds API fetch failed for %s: %s; retry later", league, type(exc).__name__)
         return []
 
     parsed: List[Dict[str, Any]] = []
@@ -256,6 +309,7 @@ def fetch_totals_market(league: str) -> List[Dict[str, Any]]:
                 "home_team": event.get("home_team"),
                 "away_team": event.get("away_team"),
                 "commence_time": _parse_commence_time(event.get("commence_time")),
+                "market_fetched_at": now,
                 **consensus,
             }
         )
@@ -388,6 +442,7 @@ def enrich_predictions_with_odds(
             "pick": meta["pick"],
             "edge_tier": meta["edge_tier"],
             "bookmaker_count": market.get("bookmaker_count", 0),
+            "market_fetched_at": market.get("market_fetched_at"),
             "odds_event_id": market.get("event_id"),
             "bookmaker_lines": market.get("bookmaker_lines") or [],
         }
