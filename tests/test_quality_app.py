@@ -40,7 +40,7 @@ class QualityAppTests(unittest.TestCase):
             "model_version": "mlb_form_pitching_v2",
         }
         mlb = {**base, "sport": "MLB"}
-        nfl = {**base, "sport": "NFL"}
+        nfl = {**base, "sport": "NFL", "model_version": "baseline_pfpa_v1", "edge": 4.0}
         self.assertTrue(quality_app._add_confidence([mlb], "MLB")[0]["best_play_eligible"])
         nfl_result = quality_app._add_confidence([nfl], "NFL")[0]
         self.assertFalse(nfl_result["best_play_eligible"])
