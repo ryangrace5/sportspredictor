@@ -21,7 +21,7 @@
         <div class="brand-sub">Market Edge Predictions for {{ date_str }}</div>
         <span class="section-note">NFL and NCAAF include tomorrow's games.</span>
         <span class="section-note">NBA totals use last regular season as a baseline, blending into current regular-season results over 10 games. Preseason excluded.</span>
-        <span class="section-note">Best Plays has stricter evidence checks. NBA, NFL, and NCAAF projections are research-only, not promoted picks.</span>
+        <span class="section-note">Best Plays applies league-specific season samples, verified odds and model validation. Unvalidated signals remain WATCH ONLY.</span>
       </div>
 
       <nav class="site-nav" aria-label="BZ Bets navigation">
@@ -276,7 +276,7 @@
                     {% endif %}
                   </span>
                   {% if research_only %}
-                    <small class="muted" title="{{ g.get('best_play_reason') or '' }}">Model signal: {{ pick }} · research only</small>
+                    <small class="muted" title="{{ g.get('best_play_reason') or '' }}">Model signal: {{ pick }} · {{ g.get('best_play_reason') or 'Not qualified for Best Plays' }}</small>
                   {% endif %}
                 </td>
               </tr>
