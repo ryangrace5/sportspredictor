@@ -91,19 +91,35 @@ Both currently use:
 
 All four league models still display projections and can be paper-tracked, but
 not every projected OVER/UNDER is recommended in the **Best Plays** section.
-The app currently labels NBA, NFL, and NCAAF signals **WATCH ONLY** while
-their models are evaluated further. There are no graded NBA results yet, and
-the tracked 2026 NFL/NCAAF model signals have not demonstrated a reliable
-advantage over the sportsbook line.
+NBA, NFL, and NCAAF signals remain **WATCH ONLY by default**. No graded
+NBA results or independently validated football advantage are established yet.
+An NFL team's 17-game season is **not** measured against NBA's game threshold.
 
-Only MLB's form-and-pitching v2 model currently qualifies for promotion, and
-only with all of the following:
+The league-specific minimum requirements below apply *before* any non-MLB
+model can be independently approved for Best Plays. These are cautious starting
+rules for forward testing, not backtested optimal cutoffs or win probabilities:
 
-* At least 30 current-season games for each team
-* At least 5 independent books contributing a totals market
-* A verified matchup kickoff within 6 hours of the sportsbook market
-* An identifiable best sportsbook, line, and American price from -125 to +125
-* BZ Confidence >=72/100 (a quality signal, not win probability)
+| League | Model | Min games/team | Min books | Min edge | Min evidence score |
+| --- | --- | ---: | ---: | ---: | ---: |
+| MLB | Form + pitching v2 | 30 | 5 | 0.75 runs | 72 |
+| NBA | Regular-season blend v1 | 10 current | 5 | 4.0 points | 82 |
+| NFL | PF/PA baseline v1 | 5 | 5 | 3.0 points | 85 |
+| NCAAF | PF/PA baseline v1 | 6 | 5 | 4.0 points | 85 |
+
+All Best Plays also require a matching sportsbook event/kickoff within six
+hours of the schedule time, a named best sportsbook, a playable American price
+between -125 and +125, and a game that has not started. NBA must have at
+least 10 *current* regular-season games for each team, independent of prior
+season blending.
+
+MLB v2 remains enabled. Once an NBA/NFL/NCAAF model has shown a repeatable
+edge in held-out and forward paper tracking, an operator may explicitly set
+`BZ_VALIDATED_LEAGUES=NFL` (or a comma-separated league list) in the deployment
+environment. **Do not set this merely because a sample threshold was reached**:
+the simple football PF/PA baseline has not yet shown a reliable advantage.
+The approval flag never overrides market, price, game-state or sample checks.
+The Picks table displays the specific reason that a WATCH ONLY signal was
+withheld.
 
 Best Plays now sorts by data-quality score and market depth, rather than
 automatically putting the biggest modeled edge first. If no projection
