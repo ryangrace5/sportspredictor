@@ -25,6 +25,22 @@ class NcaafTeamMatchingTests(unittest.TestCase):
             ("Texas Tech", "Texas Tech"),
         )
 
+    def test_miami_ohio_matches_live_sheet_name(self):
+        from pathlib import Path
+        from ncaaf_team_matching_helper import load_mapping
+
+        path = Path(__file__).resolve().parents[1] / "ncaaf_team_mapping.json"
+        mapping = load_mapping(str(path))
+        sheet_names = ["Miami (Ohio) Redhawks", "Miami Hurricanes"]
+        self.assertEqual(
+            resolve_team("Miami (OH) RedHawks", mapping, sheet_names),
+            ("Miami (OH)", "Miami (Ohio) Redhawks"),
+        )
+        self.assertEqual(
+            resolve_team("Miami Hurricanes", mapping, sheet_names),
+            ("Miami (FL)", "Miami Hurricanes"),
+        )
+
     def test_miami_ohio_stays_separate_from_miami_florida(self):
         sheet_names = ["Miami (OH)", "Miami (FL)"]
         self.assertEqual(
