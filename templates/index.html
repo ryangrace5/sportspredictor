@@ -39,7 +39,7 @@
           BZ Total still shows the model projection; no Over/Under pick is generated without a market line.
         </div>
       {% endif %}
-      <span class="section-note">Sportsbook odds are periodically refreshed to conserve API credits, not live. Always verify current lines and prices before betting.</span>
+      <span class="section-note">Sportsbook odds are cached, not live. We refresh more often near kickoff when API credits permit. Only quotes fetched within 2 hours can qualify for Best Plays. Always confirm the line and price at the sportsbook.</span>
 
       <div class="controls">
         <label class="sr-only" for="searchInput">Search by team name</label>
@@ -106,6 +106,7 @@
                   {% endif %}
                 </div>
               {% endif %}
+              {% if g.get('odds_age_minutes') is not none %}<small class="section-note">Sportsbook snapshot {{ g.get('odds_age_minutes') }} min old</small>{% endif %}
               <div class="best-bet-metrics">
                 <span><small>Consensus</small><strong>{{ "%.1f"|format(g.market_total) }}</strong></span>
                 <span><small>BZ</small><strong>{{ "%.1f"|format(g.predicted_total) }}</strong></span>
@@ -219,7 +220,10 @@
                     <strong>{{ "%.1f"|format(market) }}</strong>
                     <small>{{ g.get('bookmaker_count', 0) }} book{% if g.get('bookmaker_count', 0) != 1 %}s{% endif %}</small>
                     {% if g.get('market_fetched_at') %}
-                      <small title="Cached sportsbook snapshot">As of {{ g.get('market_fetched_at').strftime('%b %d %I:%M %p UTC') }}</small>
+                      <small title="Cached sportsbook snapshot">As of {{ g.get('market_fetched_at').strftime('%b %d %I:%M %p UTC') }}{% if g.get('odds_age_minutes') is not none %} · {{ g.get('odds_age_minutes') }} min old{% endif %}</small>
+                      {% if g.get('odds_age_minutes') is none or g.get('odds_age_minutes') > 120 %}
+                        <small class="section-note">Stale quote — research only</small>
+                      {% endif %}
                     {% endif %}
                   {% else %}
                     <span class="muted">—</span>

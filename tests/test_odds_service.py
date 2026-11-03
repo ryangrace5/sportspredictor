@@ -6,6 +6,8 @@ from unittest.mock import Mock, patch
 import requests
 
 from odds_service import (
+    _cache_ttl,
+    _quote_age_minutes,
     _extract_consensus_total,
     _select_best_offer,
     enrich_predictions_with_odds,
@@ -187,6 +189,61 @@ class OddsServiceTests(unittest.TestCase):
         self.assertEqual(mock_get.call_args.kwargs["params"]["markets"], "totals")
         self.assertTrue(mock_get.call_args.args[0].endswith("/americanfootball_ncaaf/odds"))
         self.assertIsInstance(first[0]["market_fetched_at"], datetime)
+
+    def test_cache_refreshes_approaching_games_but_not_distant_games(self):
+        now = datetime.now(timezone.utc)
+        self.assertEqual(
+            _cache_ttl([{"commence_time": now + timedelta(hours=2)}], now),
+            timedelta(hours=2),
+        )
+        self.assertEqual(
+            _cache_ttl([{"commence_time": now + timedelta(hours=9)}], now),
+            timedelta(hours=8),
+        )
+        self.assertEqual(
+            _cache_ttl([{"commence_time": now - timedelta(hours=1)}], now),
+            timedelta(hours=8),
+        )
+
+    def test_quote_age_reports_missing_and_future_as_unknown(self):
+        now = datetime(2026, 11, 3, 5, 0, tzinfo=timezone.utc)
+        self.assertEqual(_quote_age_minutes(now - timedelta(minutes=73), now), 73)
+        self.assertIsNone(_quote_age_minutes(now + timedelta(minutes=1), now))
+        self.assertIsNone(_quote_age_minutes(None, now))
+
+    @patch.dict(os.environ, {"THE_ODDS_API_KEY": "test-not-a-real-secret"})
+    @patch("odds_service.requests.get")
+    def test_cached_approaching_game_refreshes_after_two_hours(self, mock_get):
+        now = datetime.now(timezone.utc)
+        old_event = {
+            "commence_time": now + timedelta(hours=1),
+            "market_fetched_at": now - timedelta(hours=3),
+            "market_total": 50.5,
+        }
+        response = Mock()
+        response.json.return_value = [self.event]
+        response.headers = {"x-requests-remaining": "490"}
+        mock_get.return_value = response
+        with patch("odds_service._cache", {"NFL": (now - timedelta(hours=3), [old_event])}), patch(
+            "odds_service._failed_until", {}
+        ), patch("odds_service._out_of_credits_until", None):
+            fresh = fetch_totals_market("NFL")
+        mock_get.assert_called_once()
+        self.assertNotEqual(fresh, [old_event])
+
+    @patch.dict(os.environ, {"THE_ODDS_API_KEY": "test-not-a-real-secret"})
+    @patch("odds_service.requests.get")
+    def test_low_quota_reserve_prevents_additional_refresh_calls(self, mock_get):
+        response = Mock()
+        response.json.return_value = [self.event]
+        response.headers = {"x-requests-remaining": "49"}
+        mock_get.return_value = response
+        with patch("odds_service._cache", {}), patch(
+            "odds_service._failed_until", {}
+        ), patch("odds_service._out_of_credits_until", None):
+            self.assertEqual(len(fetch_totals_market("NFL")), 1)
+            self.assertEqual(fetch_totals_market("NBA"), [])
+        mock_get.assert_called_once()
 
     @patch.dict(os.environ, {"THE_ODDS_API_KEY": "test-not-a-real-secret"})
     @patch("odds_service.requests.get")

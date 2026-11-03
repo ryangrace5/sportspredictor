@@ -1,5 +1,5 @@
 import unittest
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pandas as pd
@@ -37,6 +37,7 @@ class QualityAppTests(unittest.TestCase):
             "pick": "OVER", "edge": 1.2, "bookmaker_count": 8,
             "best_price": -110, "best_line": 8.5,
             "best_book": "Test Book", "market_time_verified": True,
+            "market_fetched_at": datetime.now(timezone.utc),
             "model_version": "mlb_form_pitching_v2",
         }
         mlb = {**base, "sport": "MLB"}

@@ -44,9 +44,36 @@ TEAM_NAME_ALIASES = {
 # before restarts and other API usage (the free allowance is 500 credits/month).
 _cache: Dict[str, Any] = {}
 _CACHE_TTL = timedelta(hours=8)
+_NEAR_GAME_TTL = timedelta(hours=2)
+_NEAR_GAME_WINDOW = timedelta(hours=4)
+# The 500-credit free allowance is shared with other uses of the same API key.
+# Stop refreshing early so the dashboard does not drain the final credits.
+_MIN_CREDIT_RESERVE = 50
 _FAILURE_RETRY = timedelta(minutes=30)
 _failed_until: Dict[str, datetime] = {}
 _out_of_credits_until: Optional[datetime] = None
+
+
+def _cache_ttl(events: List[Dict[str, Any]], now: datetime) -> timedelta:
+    """Refresh faster when a cached game is approaching, otherwise conserve quota."""
+    for event in events:
+        start = event.get("commence_time")
+        if isinstance(start, datetime):
+            if start.tzinfo is None:
+                continue
+            until_game = start.astimezone(timezone.utc) - now
+            if timedelta(0) <= until_game <= _NEAR_GAME_WINDOW:
+                return _NEAR_GAME_TTL
+    return _CACHE_TTL
+
+
+def _quote_age_minutes(fetched_at: Any, now: Optional[datetime] = None) -> Optional[int]:
+    """Displayable age; an unknown or future quote is never treated as fresh."""
+    if not isinstance(fetched_at, datetime) or fetched_at.tzinfo is None:
+        return None
+    now = now or datetime.now(timezone.utc)
+    seconds = (now - fetched_at.astimezone(timezone.utc)).total_seconds()
+    return int(seconds // 60) if seconds >= 0 else None
 
 
 def _next_month_start(now: datetime) -> datetime:
@@ -247,7 +274,7 @@ def fetch_totals_market(league: str) -> List[Dict[str, Any]]:
     cached = _cache.get(league)
     if cached:
         fetched_at, events = cached
-        if now - fetched_at < _CACHE_TTL:
+        if now - fetched_at < _cache_ttl(events, now):
             return events
 
     # Don't repeatedly hit the provider on failed pages or after exhaustion.
@@ -276,9 +303,12 @@ def fetch_totals_market(league: str) -> List[Dict[str, Any]]:
         if remaining is not None:
             logging.info("Odds API credits remaining after %s fetch: %s", league, remaining)
             try:
-                if int(remaining) <= 0:
+                if int(remaining) <= _MIN_CREDIT_RESERVE:
                     _out_of_credits_until = _next_month_start(now)
-                    logging.warning("Odds API monthly allowance exhausted; pausing until %s", _out_of_credits_until.isoformat())
+                    logging.warning(
+                        "Odds API has %s credits remaining; holding reserve until %s",
+                        remaining, _out_of_credits_until.isoformat(),
+                    )
             except (TypeError, ValueError):
                 pass
     except requests.HTTPError as exc:
@@ -414,6 +444,7 @@ def enrich_predictions_with_odds(
                 "best_edge": None,
                 "best_abs_edge": None,
                 "line_improvement": None,
+                "odds_age_minutes": None,
             }
         )
 
@@ -443,6 +474,7 @@ def enrich_predictions_with_odds(
             "edge_tier": meta["edge_tier"],
             "bookmaker_count": market.get("bookmaker_count", 0),
             "market_fetched_at": market.get("market_fetched_at"),
+            "odds_age_minutes": _quote_age_minutes(market.get("market_fetched_at")),
             "odds_event_id": market.get("event_id"),
             "bookmaker_lines": market.get("bookmaker_lines") or [],
         }
