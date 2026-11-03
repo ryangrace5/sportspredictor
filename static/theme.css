@@ -1,0 +1,169 @@
+/* Automatic location-aware color theme for BZ Betz.
+   Base light styles live in styles.css; these selectors cover old hard-coded
+   white surfaces on Picks, Performance, Data Health and mobile card layouts. */
+
+:root { color-scheme: light; }
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0b1220;
+  --card: #142034;
+  --card-soft: #1c2a40;
+  --border: #33435b;
+  --text: #eef4ff;
+  --text-dim: #c2d0e1;
+  --muted: #a9b9cc;
+  --header: #26364e;
+  --green: #6ee7b7;
+  --green-soft: #143d33;
+  --red: #fca5a5;
+  --red-soft: #45212c;
+  --amber: #fcd34d;
+  --amber-soft: #493615;
+  --blue: #93c5fd;
+  --blue-soft: #193856;
+  --shadow: 0 12px 30px rgba(0,0,0,.28);
+}
+
+/* Theme picker is intentionally visible on every screen size. */
+.theme-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  column-gap: 10px;
+  row-gap: 5px;
+  margin: 2px auto 4px;
+  padding: 7px 11px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card-soft);
+  color: var(--text);
+}
+.theme-controls label {
+  font-size: 12px;
+  font-weight: 850;
+}
+.theme-controls select {
+  min-height: 37px;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 7px 10px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 750;
+  cursor: pointer;
+}
+.theme-controls select:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+.theme-controls .theme-status {
+  flex-basis: 100%;
+  font-size: 11px;
+  color: var(--muted);
+  text-align: center;
+  line-height: 1.35;
+}
+@media (max-width: 760px) {
+  .theme-controls { width: min(100%, 340px); padding: 8px 12px; }
+  .theme-controls select { min-height: 44px; }
+}
+
+:root[data-theme="dark"] :is(
+  .site-nav a, .search input, .filter-chip, .best-bet-metrics span,
+  .best-book-callout, .odds-price, .model-breakdown,
+  .performance-hero, .performance-filters, .performance-filters select,
+  .performance-filters a, .metric-card:not(.primary-metric),
+  .breakdown-card, .empty-performance, .status-banner code
+) {
+  background: var(--card);
+  color: var(--text);
+}
+:root[data-theme="dark"] :is(
+  tbody tr, .predictions tbody tr.game-row,
+  .performance-table tbody tr
+) {
+  background: var(--card);
+}
+:root[data-theme="dark"] :is(
+  tbody tr:nth-child(odd), .predictions tbody tr.game-row:nth-child(odd),
+  .performance-table tbody tr:nth-child(odd)
+) { background: var(--card-soft); }
+:root[data-theme="dark"] tbody tr:hover { background: var(--header); }
+:root[data-theme="dark"] .best-bet-card {
+  background: linear-gradient(180deg, var(--card), var(--card-soft));
+}
+:root[data-theme="dark"] :is(
+  .league-badge, .model-chip, .pick-no-line,
+  .model-breakdown[open] summary, .model-breakdown-grid span,
+  .starter-row span, .cell.best-book, .predictions .cell.best-book,
+  .predictions .cell.market, .predictions .cell.total,
+  .predictions .cell.edge, .performance-table td:nth-child(4),
+  .performance-table td:nth-child(5), .performance-table td:nth-child(6),
+  .performance-table td:nth-child(7), .performance-table td:nth-child(9)
+) {
+  background: var(--card-soft);
+  border-color: var(--border);
+  color: var(--text-dim);
+}
+:root[data-theme="dark"] .league-badge { color: var(--text); }
+:root[data-theme="dark"] :is(
+  .site-nav a:hover, .site-nav a.active, .filter-chip.active,
+  .performance-filters button
+) {
+  background: var(--text);
+  color: var(--bg);
+  border-color: var(--text);
+}
+:root[data-theme="dark"] .btn-clear:hover,
+:root[data-theme="dark"] .filter-chip:hover:not(.active) {
+  background: var(--header);
+  color: var(--text);
+}
+:root[data-theme="dark"] .search-icon,
+:root[data-theme="dark"] .btn-clear { color: var(--muted); }
+:root[data-theme="dark"] .filter-divider { background: var(--border); }
+:root[data-theme="dark"] .model-chip { color: var(--text); }
+:root[data-theme="dark"] .pill { border-color: #3c6591; }
+:root[data-theme="dark"] :is(
+  .pick-over, .pick-under, .pick-pass, .result-win, .result-loss,
+  .result-push, .result-pass
+) { border-color: var(--border); }
+:root[data-theme="dark"] .result-win { background: var(--green-soft); color: var(--green); }
+:root[data-theme="dark"] .result-loss { background: var(--red-soft); color: var(--red); }
+:root[data-theme="dark"] .result-push { background: var(--blue-soft); color: var(--blue); }
+:root[data-theme="dark"] .result-pass { background: var(--amber-soft); color: var(--amber); }
+:root[data-theme="dark"] .status-banner {
+  background: var(--amber-soft);
+  border-color: #876b35;
+  color: #ffe19c;
+}
+:root[data-theme="dark"] .integrity-banner {
+  background: var(--blue-soft);
+  border-color: #3c6591;
+  color: var(--blue);
+}
+:root[data-theme="dark"] .tracking-meta strong { color: var(--text); }
+:root[data-theme="dark"] .metric-card.primary-metric {
+  background: #233654;
+  color: var(--text);
+}
+:root[data-theme="dark"] .positive { color: var(--green) !important; }
+:root[data-theme="dark"] .negative { color: var(--red) !important; }
+:root[data-theme="dark"] .health-card {
+  background: var(--card-soft);
+  border-color: var(--border);
+}
+:root[data-theme="dark"] .health-summary { background: var(--card-soft); }
+:root[data-theme="dark"] .health-ok { color: var(--green); }
+:root[data-theme="dark"] .health-warning { color: var(--amber); }
+:root[data-theme="dark"] .health-error { color: var(--red); }
+:root[data-theme="dark"] .health-watch { color: var(--blue); }
+:root[data-theme="dark"] .theme-controls { background: var(--card-soft); }
+
+/* Keep team badges legible without changing the original team artwork. */
+:root[data-theme="dark"] .logo { background: #fff; }
