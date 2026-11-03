@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import os
 import re
 from datetime import datetime, timedelta
@@ -23,8 +24,12 @@ HEADERS = [
     "pick", "bookmaker_count", "odds_event_id", "snapshot_at_ct", "actual_away",
     "actual_home", "actual_total", "result", "graded_at_ct", "status", "model_version",
     "last_market_total", "last_market_at_ct", "clv", "clv_status", "canonical_key",
-    "snapshot_source",
+    "snapshot_source", "quote_book", "quote_line", "quote_price", "quote_fetched_at",
 ]
+
+# A historical quote is counted in priced paper results only when it was observed
+# shortly before the pregame snapshot. Older cached lines are still archived.
+MAX_QUOTE_AGE = timedelta(hours=2)
 
 ESPN_SCOREBOARD_URLS = {
     "MLB": "https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard",
@@ -88,22 +93,42 @@ def _sheet_id() -> str:
 
 def _ensure_tracking_sheet(service) -> None:
     meta = service.spreadsheets().get(
-        spreadsheetId=_sheet_id(), fields="sheets.properties.title"
+        spreadsheetId=_sheet_id(),
+        fields="sheets(properties(sheetId,title,gridProperties(columnCount)))",
     ).execute()
-    titles = {(s.get("properties") or {}).get("title") for s in meta.get("sheets") or []}
-    if TRACKING_SHEET not in titles:
+    sheets = meta.get("sheets") or []
+    existing = next(
+        (sheet.get("properties") or {} for sheet in sheets
+         if (sheet.get("properties") or {}).get("title") == TRACKING_SHEET),
+        None,
+    )
+    if existing is None:
         service.spreadsheets().batchUpdate(
             spreadsheetId=_sheet_id(),
-            body={"requests": [{"addSheet": {"properties": {"title": TRACKING_SHEET}}}]},
+            body={"requests": [{"addSheet": {"properties": {
+                "title": TRACKING_SHEET,
+                "gridProperties": {"columnCount": max(26, len(HEADERS))},
+            }}}]},
         ).execute()
+    else:
+        # The original sheet ended at AC. Extend it before writing AD:AG.
+        columns = (existing.get("gridProperties") or {}).get("columnCount", 26)
+        if columns < len(HEADERS):
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=_sheet_id(),
+                body={"requests": [{"appendDimension": {
+                    "sheetId": existing["sheetId"],
+                    "dimension": "COLUMNS",
+                    "length": len(HEADERS) - columns,
+                }}]},
+            ).execute()
 
     service.spreadsheets().values().update(
         spreadsheetId=_sheet_id(),
-        range=f"'{TRACKING_SHEET}'!A1:AC1",
+        range=f"'{TRACKING_SHEET}'!A1:AG1",
         valueInputOption="RAW",
         body={"values": [HEADERS]},
     ).execute()
-
 
 def _normalize_team(name: Optional[str]) -> str:
     if not name:
@@ -194,7 +219,7 @@ def _read_tracking_rows(service=None, dedupe: bool = True) -> List[Dict[str, Any
     service = service or _sheets_service()
     _ensure_tracking_sheet(service)
     values = service.spreadsheets().values().get(
-        spreadsheetId=_sheet_id(), range=f"'{TRACKING_SHEET}'!A2:AC"
+        spreadsheetId=_sheet_id(), range=f"'{TRACKING_SHEET}'!A2:AG"
     ).execute().get("values", [])
 
     rows = []
@@ -398,6 +423,11 @@ def record_prediction_snapshots(predictions: Iterable[Dict[str, Any]]) -> Dict[s
             pick = prediction.get("pick") or ""
             clv = _clv_value(pick, current_market, current_market)
             model_version = prediction.get("model_version") or MODEL_VERSION
+            quote_fetched_at = prediction.get("market_fetched_at")
+            if isinstance(quote_fetched_at, datetime):
+                quote_fetched_at = quote_fetched_at.isoformat()
+            elif not isinstance(quote_fetched_at, str):
+                quote_fetched_at = ""
             row = [
                 key,
                 game_date,
@@ -428,6 +458,10 @@ def record_prediction_snapshots(predictions: Iterable[Dict[str, Any]]) -> Dict[s
                 "FIRST_OBSERVED",
                 key,
                 source,
+                prediction.get("best_book") or "" if pick in {"OVER", "UNDER"} else "",
+                prediction.get("best_line") if pick in {"OVER", "UNDER"} and prediction.get("best_line") is not None else "",
+                prediction.get("best_price") if pick in {"OVER", "UNDER"} and prediction.get("best_price") is not None else "",
+                quote_fetched_at if pick in {"OVER", "UNDER"} else "",
             ]
             append_rows.append(row)
             by_key[key] = {
@@ -439,7 +473,7 @@ def record_prediction_snapshots(predictions: Iterable[Dict[str, Any]]) -> Dict[s
         if append_rows:
             service.spreadsheets().values().append(
                 spreadsheetId=_sheet_id(),
-                range=f"'{TRACKING_SHEET}'!A:AC",
+                range=f"'{TRACKING_SHEET}'!A:AG",
                 valueInputOption="RAW",
                 insertDataOption="INSERT_ROWS",
                 body={"values": append_rows},
@@ -841,6 +875,62 @@ def _aggregate(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+
+def _quoted_paper_summary(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+    """Hypothetical 1u returns at the frozen sportsbook quote, not consensus.
+
+    Unlike the legacy -110 comparison, these results require a real pregame
+    quote with a recorded timestamp. Stale offers and legacy unpriced rows are
+    intentionally excluded; no real wagers are implied.
+    """
+    wins = losses = pushes = 0
+    units = 0.0
+    for row in rows:
+        pick = (row.get("pick") or "").upper()
+        if pick not in {"OVER", "UNDER"} or row.get("status") != "FINAL":
+            continue
+        line = _to_float(row.get("quote_line"))
+        price = _to_float(row.get("quote_price"))
+        actual = _to_float(row.get("actual_total"))
+        if (
+            line is None or price is None or actual is None
+            or not all(math.isfinite(x) for x in (line, price, actual))
+            or not (price <= -100 or price >= 100)
+            or not row.get("quote_book")
+        ):
+            continue
+
+        fetched = _parse_dt(row.get("quote_fetched_at"))
+        snapshot = _parse_dt(row.get("snapshot_at_ct"))
+        kickoff = _parse_dt(row.get("game_time_ct"))
+        if (
+            fetched is None or snapshot is None or kickoff is None
+            or not (fetched <= snapshot < kickoff)
+            or snapshot - fetched > MAX_QUOTE_AGE
+        ):
+            continue
+
+        outcome = _grade_pick(pick, line, actual)
+        if outcome == "WIN":
+            wins += 1
+            units += price / 100.0 if price > 0 else 100.0 / abs(price)
+        elif outcome == "LOSS":
+            losses += 1
+            units -= 1.0
+        elif outcome == "PUSH":
+            pushes += 1
+
+    count = wins + losses + pushes
+    return {
+        "count": count,
+        "wins": wins,
+        "losses": losses,
+        "pushes": pushes,
+        "flat_units": round(units, 2),
+        "roi_pct": round(100.0 * units / count, 1) if count else None,
+    }
+
+
 def _filter_state() -> Dict[str, str]:
     state = {"window": "all", "league": "ALL", "pick": "ALL", "tier": "ALL"}
     if not has_request_context():
@@ -943,6 +1033,7 @@ def get_performance_dashboard() -> Dict[str, Any]:
             "pass_games": 0,
             "duplicates_ignored": 0,
             "clv": _clv_summary([]),
+            "quoted": _quoted_paper_summary([]),
             "filters": _filter_state(),
             "error": str(exc),
         }
@@ -1003,6 +1094,7 @@ def get_performance_dashboard() -> Dict[str, Any]:
         "pass_games": sum(1 for row in rows if row.get("pick") == "PASS"),
         "duplicates_ignored": max(0, len(raw_rows) - len(canonical_rows)),
         "clv": _clv_summary(rows),
+        "quoted": _quoted_paper_summary(rows),
         "filters": filters,
         "model_version": MODEL_VERSION,
     }
