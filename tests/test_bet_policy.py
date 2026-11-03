@@ -1,5 +1,6 @@
 import os
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from bet_policy import LEAGUE_RULES, assess_best_play, validated_leagues
@@ -14,6 +15,7 @@ class ConservativeBestPlaysTests(unittest.TestCase):
             "model_version": "mlb_form_pitching_v2",
             "sample_games": 72,
             "market_time_verified": True,
+            "market_fetched_at": datetime.now(timezone.utc),
             "bookmaker_count": 8,
             "best_line": 8.5,
             "best_book": "Test Sportsbook",
@@ -66,6 +68,28 @@ class ConservativeBestPlaysTests(unittest.TestCase):
                 self.assertFalse(assess_best_play({**good, "model_version": "unknown"})[0])
                 if league == "NBA":
                     self.assertFalse(assess_best_play({**good, "nba_current_games": 5})[0])
+
+    def test_stale_or_unverifiable_odds_block_best_plays(self):
+        for fetched_at in (
+            None,
+            "",
+            datetime.now(timezone.utc) - timedelta(hours=3),
+            datetime.now(timezone.utc) + timedelta(minutes=5),
+            datetime.now(timezone.utc).replace(tzinfo=None),
+        ):
+            with self.subTest(fetched_at=fetched_at):
+                approved, reason = assess_best_play({
+                    **self.good, "market_fetched_at": fetched_at,
+                })
+                self.assertFalse(approved)
+                self.assertTrue("odds" in reason.lower(), reason)
+
+    def test_fresh_odds_can_qualify(self):
+        good = dict(
+            self.good, market_fetched_at=datetime.now(timezone.utc) - timedelta(minutes=30)
+        )
+        approved, reason = assess_best_play(good)
+        self.assertTrue(approved, reason)
 
     def test_baseline_only_mlb_is_not_promoted(self):
         allowed, reason = assess_best_play(
