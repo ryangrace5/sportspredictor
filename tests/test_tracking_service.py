@@ -1,8 +1,13 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
 from tracking_service import (
     _aggregate,
+    _ensure_tracking_sheet,
+    _quoted_paper_summary,
+    HEADERS,
+    record_prediction_snapshots,
     _canonical_game_key,
     _clv_value,
     _fetch_completed_games,
@@ -225,6 +230,102 @@ class TrackingServiceTests(unittest.TestCase):
         self.assertEqual(summary["pushes"], 1)
         self.assertEqual(summary["hit_rate"], 66.7)
         self.assertEqual(summary["flat_units"], 0.82)
+
+
+    def test_quoted_paper_results_use_actual_book_prices(self):
+        base = {
+            "pick": "OVER", "status": "FINAL", "quote_book": "Example Book",
+            "snapshot_at_ct": "2026-11-01T14:00:00+00:00",
+            "quote_fetched_at": "2026-11-01T13:30:00+00:00",
+            "game_time_ct": "2026-11-01T18:00:00+00:00",
+        }
+        rows = [
+            {**base, "quote_line": "44.5", "quote_price": "-110", "actual_total": "45"},
+            {**base, "pick": "UNDER", "quote_line": "48.5", "quote_price": "+120", "actual_total": "47"},
+            {**base, "quote_line": "44.5", "quote_price": "-105", "actual_total": "43"},
+            {**base, "quote_line": "44.0", "quote_price": "-110", "actual_total": "44"},
+        ]
+        summary = _quoted_paper_summary(rows)
+        self.assertEqual(summary["count"], 4)
+        self.assertEqual((summary["wins"], summary["losses"], summary["pushes"]), (2, 1, 1))
+        self.assertEqual(summary["flat_units"], 1.11)
+        self.assertEqual(summary["roi_pct"], 27.7)
+
+    def test_quoted_paper_grades_the_quoted_line_not_consensus(self):
+        row = {
+            "pick": "OVER", "result": "WIN", "market_total": "44.5",
+            "quote_book": "Example Book", "quote_line": "46.5", "quote_price": "-110",
+            "actual_total": "45", "status": "FINAL",
+            "snapshot_at_ct": "2026-11-01T14:00:00+00:00",
+            "quote_fetched_at": "2026-11-01T13:30:00+00:00",
+            "game_time_ct": "2026-11-01T18:00:00+00:00",
+        }
+        result = _quoted_paper_summary([row])
+        self.assertEqual(result["losses"], 1)
+        self.assertEqual(result["flat_units"], -1.0)
+
+    def test_stale_or_unpriced_quotes_are_not_counted(self):
+        base = {
+            "pick": "OVER", "status": "FINAL", "quote_book": "Example",
+            "quote_line": "44.5", "quote_price": "-110", "actual_total": "48",
+            "snapshot_at_ct": "2026-11-01T14:00:00+00:00",
+            "quote_fetched_at": "2026-11-01T11:00:00+00:00",
+            "game_time_ct": "2026-11-01T18:00:00+00:00",
+        }
+        cases = [
+            base,  # price fetched three hours before the snapshot
+            {**base, "quote_fetched_at": "", "result": "WIN"},
+            {**base, "quote_fetched_at": "2026-11-01T13:30:00+00:00", "quote_price": "-80"},
+            {**base, "quote_fetched_at": "2026-11-01T13:30:00+00:00", "quote_book": ""},
+            {**base, "quote_fetched_at": "2026-11-01T13:30:00+00:00", "game_time_ct": "2026-11-01T13:00:00+00:00"},
+        ]
+        result = _quoted_paper_summary(cases)
+        self.assertEqual(result["count"], 0)
+        self.assertIsNone(result["roi_pct"])
+
+    def test_tracking_snapshots_append_quote_without_changing_legacy_columns(self):
+        service = Mock()
+        now = datetime.now(timezone.utc)
+        prediction = {
+            "sport": "NFL", "team1": "Away", "team2": "Home",
+            "game_time": now + timedelta(days=1),
+            "market_total": 44.5, "predicted_total": 47.5, "edge": 3.0,
+            "pick": "OVER", "best_book": "Example Book",
+            "best_line": 44.0, "best_price": -105,
+            "market_fetched_at": now - timedelta(minutes=15),
+        }
+        with patch("tracking_service._sheets_service", return_value=service), patch(
+            "tracking_service._read_tracking_rows", side_effect=[[], []]
+        ):
+            result = record_prediction_snapshots([prediction])
+
+        self.assertEqual(result["inserted"], 1)
+        request = service.spreadsheets().values().append.call_args.kwargs
+        self.assertTrue(request["range"].endswith("!A:AG"))
+        row = request["body"]["values"][0]
+        self.assertEqual(len(row), len(HEADERS))
+        self.assertEqual(row[8], 44.5)  # unchanged consensus column
+        self.assertEqual(row[-4:], [
+            "Example Book", 44.0, -105,
+            (now - timedelta(minutes=15)).isoformat(),
+        ])
+
+    def test_tracking_sheet_expands_existing_29_column_grid(self):
+        service = Mock()
+        service.spreadsheets().get().execute.return_value = {
+            "sheets": [{
+                "properties": {
+                    "sheetId": 7, "title": "Predictions",
+                    "gridProperties": {"columnCount": 29},
+                }
+            }]
+        }
+        _ensure_tracking_sheet(service)
+        updates = service.spreadsheets().batchUpdate.call_args.kwargs
+        request = updates["body"]["requests"][0]["appendDimension"]
+        self.assertEqual(request, {"sheetId": 7, "dimension": "COLUMNS", "length": 4})
+        self.assertTrue(service.spreadsheets().values().update.call_args.kwargs["range"].endswith("!A1:AG1"))
+
 
 
 if __name__ == "__main__":
