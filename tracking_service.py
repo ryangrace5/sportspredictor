@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import pytz
 import requests
+from backtesting_service import evaluate_pregame_snapshots
 from flask import has_request_context, request
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -1034,12 +1035,20 @@ def get_performance_dashboard() -> Dict[str, Any]:
             "duplicates_ignored": 0,
             "clv": _clv_summary([]),
             "quoted": _quoted_paper_summary([]),
+            "backtest": evaluate_pregame_snapshots([]),
             "filters": _filter_state(),
             "error": str(exc),
         }
 
     filters = _filter_state()
     rows = [row for row in canonical_rows if _row_in_filter(row, filters)]
+    # Forecast accuracy is measured across all eligible scored matchups,
+    # including PASS/research rows. Pick/edge-tier filters are not applicable;
+    # the date window and league selection still apply.
+    backtest_filters = {**filters, "pick": "ALL", "tier": "ALL"}
+    backtest_rows = [
+        row for row in canonical_rows if _row_in_filter(row, backtest_filters)
+    ]
     graded_bets = [
         row
         for row in rows
@@ -1095,6 +1104,7 @@ def get_performance_dashboard() -> Dict[str, Any]:
         "duplicates_ignored": max(0, len(raw_rows) - len(canonical_rows)),
         "clv": _clv_summary(rows),
         "quoted": _quoted_paper_summary(rows),
+        "backtest": evaluate_pregame_snapshots(backtest_rows),
         "filters": filters,
         "model_version": MODEL_VERSION,
     }
