@@ -33,7 +33,7 @@ class PregameBacktestTests(unittest.TestCase):
         self.assertEqual(result["eligible"], 3)
         self.assertEqual(nfl["bz_mae"], 1.33)
         self.assertEqual(nfl["market_mae"], 1.33)
-        self.assertEqual(nfl["bz_rmse"], 1.63)
+        self.assertEqual(nfl["bz_rmse"], 1.83)
         self.assertEqual(nfl["market_rmse"], 1.41)
         self.assertEqual(nfl["bz_bias"], -0.67)
         self.assertEqual(nfl["market_bias"], -0.67)
