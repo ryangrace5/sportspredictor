@@ -153,6 +153,29 @@ NCAAF results use a backup ESPN scoreboard when the primary feed is unavailable.
 Pending college picks are retried throughout the season, including bowl games
 across the year boundary. Grading preserves the original pregame pick and line.
 
+### Quoted-price paper performance
+
+The Performance page now separates the original consensus-line, assumed -110
+flat-unit results from **Quoted Paper ROI**. This is a hypothetical 1-unit
+return calculated using the first observed sportsbook's best featured total
+and quoted American price. A quoted pick is graded **at that sportsbook line**,
+not at the consensus line; the outcomes can differ.
+
+The `Predictions` sheet automatically adds four appended columns:
+`quote_book`, `quote_line`, `quote_price`, and `quote_fetched_at`.
+Existing data and column positions remain unchanged. Legacy rows without
+all four fields are not backfilled or included in quoted performance.
+
+Only finalized OVER/UNDER picks with a valid quoted price, a named sportsbook,
+and a complete timeline are counted. The provider quote must have been fetched
+no more than two hours before the first pregame tracking snapshot; the snapshot
+itself must precede the game. Stale/missing quotes are excluded rather than
+silently assigned a -110 price. The existing odds cache may cause a small
+sample until quote refresh timing improves.
+
+**Important:** These are paper results and do not imply any wager was placed
+or that the quoted price was still available when a user tried to bet.
+
 ## Tech Stack
 
 * Python / Flask

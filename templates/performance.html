@@ -34,7 +34,7 @@
       <div>
         <span class="eyebrow">First observed line + last observed pregame line</span>
         <h1>BZ Bets Results</h1>
-        <p>OVER/UNDER picks are graded from final scores. Line value is positive when the market moves in the direction of the original BZ pick.</p>
+        <p>OVER/UNDER picks are graded from final scores. Line value is positive when the market moves in the direction of the original BZ pick. These are hypothetical model outcomes, not verified real-money wagers.</p>
       </div>
       <div class="tracking-meta">
         <strong>{{ dashboard.tracked_games }}</strong>
@@ -86,6 +86,16 @@
         <span class="metric-label">Flat-Bet Units</span>
         <strong class="{% if dashboard.overall.flat_units > 0 %}positive{% elif dashboard.overall.flat_units < 0 %}negative{% endif %}">{{ "%+.2f"|format(dashboard.overall.flat_units) }}</strong>
         <small>1u risk per bet, -110 assumption</small>
+      </article>
+      <article class="metric-card">
+        <span class="metric-label">Quoted Paper ROI</span>
+        {% if dashboard.quoted.count %}
+          <strong class="{% if dashboard.quoted.roi_pct > 0 %}positive{% elif dashboard.quoted.roi_pct < 0 %}negative{% endif %}">{{ "%+.1f"|format(dashboard.quoted.roi_pct) }}%</strong>
+          <small>{{ "%+.2f"|format(dashboard.quoted.flat_units) }}u · {{ dashboard.quoted.count }} fresh, priced paper picks</small>
+        {% else %}
+          <strong>—</strong>
+          <small>Awaiting pregame quotes no more than 2h old</small>
+        {% endif %}
       </article>
       <article class="metric-card">
         <span class="metric-label">Avg Line Value</span>
