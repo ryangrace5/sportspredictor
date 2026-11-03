@@ -153,6 +153,39 @@ NCAAF results use a backup ESPN scoreboard when the primary feed is unavailable.
 Pending college picks are retried throughout the season, including bowl games
 across the year boundary. Grading preserves the original pregame pick and line.
 
+### NFL/NBA pregame snapshot backtest (first milestone)
+
+The Performance page now reports forecast accuracy separately for NFL and NBA
+from **immutable saved pregame predictions**. For each verified completed game,
+it compares the original BZ projected total and the *same* first-observed
+sportsbook consensus against the final total. Nothing is retrospectively
+recomputed using updated team statistics.
+
+The module `backtesting_service.py` is dependency-free and measures:
+
+- Mean absolute error (MAE), root mean squared error (RMSE), and signed bias
+  for BZ and the market; lower MAE/RMSE is better.
+- BZ MAE advantage = market MAE minus BZ MAE, so **positive** means the model
+  was closer on average. Also counts games on which each was more accurate.
+- Separate results by sport and saved model version, with counts and reasons
+  for excluded entries. Fewer than 30 eligible games are flagged as a small
+  descriptive sample, not labeled a validated edge.
+
+**Strict inclusion requirements:** NFL or NBA, final graded game, finite
+saved model/market/actual totals, an identified saved model version, and
+timezone-aware kickoff, snapshot, and odds-fetch timestamps. The actual
+market quote must have been fetched before the first saved snapshot, which
+must precede kickoff. Quotes older than two hours when saved are excluded.
+Rows recorded before quote timestamps were added are not silently upgraded.
+
+This is **a retrospective evaluation of BZ's forward-recorded snapshots**,
+not a reconstructed historical-season backtest, leakage-free parameter
+training, or evidence of betting profitability. A true multi-season
+historical backtest requires time-stamped past features and prices; do not
+populate these fields using today's stats. The report follows the Performance
+page's date-window and league filters, but not pick/edge tier filters because
+model accuracy applies to all eligible completed games, even PASS games.
+
 ### Sportsbook odds freshness
 
 Sportsbook lines are cached to limit The Odds API usage. Each league normally
