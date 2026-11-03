@@ -13,9 +13,14 @@ explicit operator approval, not an automatic assertion of profitability.
 from __future__ import annotations
 
 import os
+from datetime import datetime, timedelta, timezone
 from math import isfinite
 from typing import Any, Dict, Tuple
 
+
+# A quote older than this threshold is still available as research data, but
+# cannot become an advertised Best Play.
+MAX_BEST_PLAY_ODDS_AGE = timedelta(hours=2)
 
 # These are conservative eligibility filters, NOT empirically optimized
 # winning thresholds. The market edge is expressed in total points/runs.
@@ -104,6 +109,13 @@ def assess_best_play(prediction: Dict[str, Any]) -> Tuple[bool, str]:
 
     if prediction.get("market_time_verified") is not True:
         return False, "Sportsbook matchup and start time not verified"
+
+    quote_at = prediction.get("market_fetched_at")
+    if not isinstance(quote_at, datetime) or quote_at.tzinfo is None:
+        return False, "Sportsbook odds freshness is unverified"
+    age = datetime.now(timezone.utc) - quote_at.astimezone(timezone.utc)
+    if age < timedelta(0) or age > MAX_BEST_PLAY_ODDS_AGE:
+        return False, "Sportsbook odds are stale; refresh before recommending"
 
     books = _number(prediction.get("bookmaker_count"))
     if books is None or books < rules["min_books"]:
