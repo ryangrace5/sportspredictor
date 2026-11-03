@@ -34,7 +34,7 @@ global.window = {
   matchMedia() { return { matches: true, addEventListener() {} }; },
   setInterval() { return 1; }
 };
-global.navigator = { geolocation: null };
+// Node 22 already exposes a navigator getter; no geolocation is provided.
 
 const { solarAltitude, isDaylight } = require("../static/theme.js");
 
