@@ -4,9 +4,11 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>BZ Bets — Market Edge Predictions</title>
+  <script src="{{ url_for('static', filename='theme.js') }}"></script>
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   <!-- Phone-only layout: desktop styling stays unchanged. -->
   <link rel="stylesheet" media="(max-width: 760px)" href="{{ url_for('static', filename='mobile.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='theme.css') }}">
   <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
 </head>
 <body class="page">
@@ -28,6 +30,15 @@
         <a href="{{ url_for('index') }}" class="active">Picks</a>
         <a href="{{ url_for('performance') }}">Performance</a>
       </nav>
+      <div class="theme-controls">
+        <label for="themeMode">Appearance</label>
+        <select id="themeMode" aria-label="Appearance mode">
+          <option value="auto">Auto · local daylight</option>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
+        <span id="themeStatus" class="theme-status" role="status" aria-live="polite">Checking device appearance…</span>
+      </div>
 
       {% if not odds_enabled %}
         <div class="status-banner">

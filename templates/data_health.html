@@ -4,7 +4,9 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>BZ Bets — Data Health</title>
+  <script src="{{ url_for('static', filename='theme.js') }}"></script>
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='theme.css') }}">
   <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}">
   <style>
     .health-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;margin:20px 0}
@@ -27,6 +29,15 @@
         <a href="{{ url_for('performance') }}">Performance</a>
         <a href="{{ url_for('data_health') }}" class="active">Data Health</a>
       </nav>
+      <div class="theme-controls">
+        <label for="themeMode">Appearance</label>
+        <select id="themeMode" aria-label="Appearance mode">
+          <option value="auto">Auto · local daylight</option>
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
+        <span id="themeStatus" class="theme-status" role="status" aria-live="polite">Checking device appearance…</span>
+      </div>
     </header>
 
     <main class="card">
