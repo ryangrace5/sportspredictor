@@ -120,6 +120,68 @@
       </article>
     </section>
 
+    <section class="backtest-panel" aria-labelledby="backtestTitle">
+      <div class="section-heading">
+        <div>
+          <span class="eyebrow">NFL + NBA · archive-only comparison</span>
+          <h2 id="backtestTitle">Pregame prediction accuracy</h2>
+        </div>
+        <span class="section-note">{{ dashboard.backtest.eligible }} verified of {{ dashboard.backtest.tracked }} tracked games</span>
+      </div>
+      <p class="backtest-explanation">
+        Uses only BZ totals and sportsbook consensus captured before kickoff, then compares
+        both with the final score. Lower MAE and RMSE are better; positive BZ MAE advantage
+        means BZ was closer on average. This is <strong>not</strong> a retroactive historical
+        model rebuild, a profitability test, or proof of future accuracy.
+      </p>
+      <div class="backtest-grid">
+        {% for league in dashboard.backtest.leagues %}
+          <article class="backtest-league">
+            <div class="backtest-league-head">
+              <strong>{{ league.league }}</strong>
+              <small>{{ league.count }} verified · {{ league.excluded }} excluded</small>
+            </div>
+            {% if league.count %}
+              <div class="backtest-stats">
+                <div><small>BZ MAE</small><strong>{{ "%.2f"|format(league.bz_mae) }}</strong></div>
+                <div><small>Market MAE</small><strong>{{ "%.2f"|format(league.market_mae) }}</strong></div>
+                <div><small>BZ RMSE</small><strong>{{ "%.2f"|format(league.bz_rmse) }}</strong></div>
+                <div><small>Market RMSE</small><strong>{{ "%.2f"|format(league.market_rmse) }}</strong></div>
+                <div><small>BZ bias</small><strong>{{ "%+.2f"|format(league.bz_bias) }}</strong></div>
+                <div><small>BZ MAE advantage</small><strong class="{% if league.mae_advantage > 0 %}positive{% elif league.mae_advantage < 0 %}negative{% endif %}">{{ "%+.2f"|format(league.mae_advantage) }}</strong></div>
+              </div>
+              <p class="backtest-details">BZ closer: {{ league.bz_more_accurate }} · Market closer: {{ league.market_more_accurate }} · Ties: {{ league.tied }}.</p>
+              {% if not league.sample_sufficient %}
+                <p class="backtest-warning">Small sample: fewer than {{ dashboard.backtest.min_descriptive_sample }} verified games. Treat these numbers as preliminary.</p>
+              {% endif %}
+              <details class="backtest-versions">
+                <summary>Results by saved model version</summary>
+                {% for version in league.versions %}
+                  <div class="backtest-version-row">
+                    <span>{{ version.version }} ({{ version.count }})</span>
+                    <span>BZ {{ "%.2f"|format(version.bz_mae) }} · Market {{ "%.2f"|format(version.market_mae) }}</span>
+                  </div>
+                {% endfor %}
+              </details>
+            {% else %}
+              <p class="backtest-empty">No fully verified, completed pregame snapshots yet. As new games finish, results will appear here automatically.</p>
+            {% endif %}
+          </article>
+        {% endfor %}
+      </div>
+      {% if dashboard.backtest.excluded %}
+        <details class="backtest-exclusions">
+          <summary>Why {{ dashboard.backtest.excluded }} tracked NFL/NBA games were excluded</summary>
+          <ul>
+            {% for reason, count in dashboard.backtest.exclusion_reasons.items() %}
+              <li>{{ reason|replace('_', ' ')|capitalize }}: {{ count }}</li>
+            {% endfor %}
+          </ul>
+        </details>
+      {% endif %}
+      <p class="backtest-footnote">Historical entries without provider quote timestamps, completed scores, a valid model version, or a verified pregame timeline are not counted. Results use the selected date window and league, independent of the Pick and Edge tier filters.</p>
+    </section>
+
     {% if dashboard.graded_bets == 0 %}
       <section class="empty-performance">
         <h2>Tracking is active.</h2>
