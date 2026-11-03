@@ -153,6 +153,27 @@ NCAAF results use a backup ESPN scoreboard when the primary feed is unavailable.
 Pending college picks are retried throughout the season, including bowl games
 across the year boundary. Grading preserves the original pregame pick and line.
 
+### Sportsbook odds freshness
+
+Sportsbook lines are cached to limit The Odds API usage. Each league normally
+uses an 8-hour cache; if a cached future game is within four hours of kickoff,
+the cache TTL shortens to two hours. A request after the shorter TTL expires
+may refresh the entire league's totals market. This is not live streaming and
+does not guarantee a line will remain available.
+
+The application reads the provider's `x-requests-remaining` response header.
+When the reported remaining allowance reaches 50 credits or fewer, it stops
+making new odds requests until the next monthly reset. Existing valid cached
+responses may remain visible while their TTL lasts. Keep monitoring API use,
+especially after Render restarts, and remember the quota may be shared with
+other applications using the same key.
+
+Every prediction shows its odds snapshot age, when available. **Best Plays
+require odds fetched in the past two hours** in addition to the existing
+model, market matching, sample, price, and validation checks. Older markets
+are still displayed for research but cannot become Best Plays. This rule
+does not constitute statistical model validation.
+
 ### Quoted-price paper performance
 
 The Performance page now separates the original consensus-line, assumed -110
