@@ -26,6 +26,7 @@ HEADERS = [
     "actual_home", "actual_total", "result", "graded_at_ct", "status", "model_version",
     "last_market_total", "last_market_at_ct", "clv", "clv_status", "canonical_key",
     "snapshot_source", "quote_book", "quote_line", "quote_price", "quote_fetched_at",
+    "first_bz_total", "first_forecast_at_ct",
 ]
 
 # A historical quote is counted in priced paper results only when it was observed
@@ -112,7 +113,7 @@ def _ensure_tracking_sheet(service) -> None:
             }}}]},
         ).execute()
     else:
-        # The original sheet ended at AC. Extend it before writing AD:AG.
+        # Older archives can have fewer columns than the current header.
         columns = (existing.get("gridProperties") or {}).get("columnCount", 26)
         if columns < len(HEADERS):
             service.spreadsheets().batchUpdate(
@@ -126,7 +127,7 @@ def _ensure_tracking_sheet(service) -> None:
 
     service.spreadsheets().values().update(
         spreadsheetId=_sheet_id(),
-        range=f"'{TRACKING_SHEET}'!A1:AG1",
+        range=f"'{TRACKING_SHEET}'!A1:AI1",
         valueInputOption="RAW",
         body={"values": [HEADERS]},
     ).execute()
@@ -175,6 +176,8 @@ def _prediction_game_date(prediction: Dict[str, Any]) -> str:
 
 
 def _snapshot_id(prediction: Dict[str, Any]) -> str:
+    if prediction.get("mlb_game_pk"):
+        return f"MLB:gamePk:{prediction['mlb_game_pk']}"
     return _canonical_game_key(
         prediction.get("sport") or "UNKNOWN",
         _prediction_game_date(prediction),
@@ -220,7 +223,7 @@ def _read_tracking_rows(service=None, dedupe: bool = True) -> List[Dict[str, Any
     service = service or _sheets_service()
     _ensure_tracking_sheet(service)
     values = service.spreadsheets().values().get(
-        spreadsheetId=_sheet_id(), range=f"'{TRACKING_SHEET}'!A2:AG"
+        spreadsheetId=_sheet_id(), range=f"'{TRACKING_SHEET}'!A2:AI"
     ).execute().get("values", [])
 
     rows = []
@@ -341,7 +344,7 @@ def _mark_missed_pregame(prediction: Dict[str, Any]) -> Dict[str, Any]:
 
 def record_prediction_snapshots(predictions: Iterable[Dict[str, Any]]) -> Dict[str, int]:
     prediction_list = list(predictions)
-    eligible = [p for p in prediction_list if p.get("market_total") is not None]
+    eligible = [p for p in prediction_list if p.get("predicted_total") is not None]
     if not eligible:
         return {
             "eligible": 0,
@@ -367,25 +370,37 @@ def record_prediction_snapshots(predictions: Iterable[Dict[str, Any]]) -> Dict[s
 
         for prediction in eligible:
             game_date = _prediction_game_date(prediction)
-            key = _canonical_game_key(
-                prediction.get("sport") or "UNKNOWN",
-                game_date,
-                prediction.get("away_team_raw") or prediction.get("team1"),
-                prediction.get("home_team_raw") or prediction.get("team2"),
-            )
-            current = by_key.get(key)
+            key = _snapshot_id(prediction)
+            current = by_key.get(key) if prediction.get("sport") != "MLB" or prediction.get("mlb_game_pk") else None
+            if prediction.get("sport") == "MLB":
+                tip = _prediction_game_time_local(prediction)
+                # Reuse a legacy or fallback snapshot only when its kickoff matches.
+                current = current or next((r for r in canonical_rows
+                    if r.get("league") == "MLB" and tip == _parse_dt(r.get("game_time_ct"))
+                    and _teams_match(r.get("home_team_raw"), prediction.get("home_team_raw"))
+                    and _teams_match(r.get("away_team_raw"), prediction.get("away_team_raw"))), None)
+                if current:
+                    key = current["_canonical_key"]
+                elif not prediction.get("mlb_game_pk") and tip:
+                    key = f"{key}:{tip.isoformat()}"
+                    current = by_key.get(key)
             game_time_local = _prediction_game_time_local(prediction)
             started = bool(game_time_local and now_local >= game_time_local)
             game_time_ct = game_time_local.isoformat() if game_time_local else ""
 
-            if current is not None:
+            priced_now = _to_float(prediction.get("market_total"))
+            promote = (current is not None and current.get("_sheet_row") and not started
+                       and game_time_local and priced_now is not None and _to_float(current.get("market_total")) is None)
+            if current is not None and not promote:
                 existing_count += 1
                 if started:
                     _freeze_prediction_from_row(prediction, current)
                     locked += 1
                     continue
 
-                current_market = float(prediction["market_total"])
+                if priced_now is None:
+                    continue
+                current_market = priced_now
                 model_version = current.get("model_version") or MODEL_VERSION
                 snapshot_source = current.get("snapshot_source") or source
                 first_line = _to_float(current.get("market_total"))
@@ -420,9 +435,9 @@ def record_prediction_snapshots(predictions: Iterable[Dict[str, Any]]) -> Dict[s
                 missed_pregame += 1
                 continue
 
-            current_market = float(prediction["market_total"])
+            current_market = priced_now
             pick = prediction.get("pick") or ""
-            clv = _clv_value(pick, current_market, current_market)
+            clv = _clv_value(pick, current_market, current_market) if priced_now is not None else None
             model_version = prediction.get("model_version") or MODEL_VERSION
             quote_fetched_at = prediction.get("market_fetched_at")
             if isinstance(quote_fetched_at, datetime):
@@ -456,15 +471,22 @@ def record_prediction_snapshots(predictions: Iterable[Dict[str, Any]]) -> Dict[s
                 current_market,
                 now_local.isoformat(),
                 clv if clv is not None else "",
-                "FIRST_OBSERVED",
+                "FIRST_OBSERVED" if priced_now is not None else "",
                 key,
                 source,
                 prediction.get("best_book") or "" if pick in {"OVER", "UNDER"} else "",
                 prediction.get("best_line") if pick in {"OVER", "UNDER"} and prediction.get("best_line") is not None else "",
                 prediction.get("best_price") if pick in {"OVER", "UNDER"} and prediction.get("best_price") is not None else "",
-                quote_fetched_at if pick in {"OVER", "UNDER"} else "",
+                quote_fetched_at if priced_now is not None else "",
+                current.get("bz_total") if promote else prediction.get("predicted_total"),
+                current.get("snapshot_at_ct") if promote else now_local.isoformat(),
             ]
-            append_rows.append(row)
+            if promote:
+                index = current["_sheet_row"]
+                metadata_updates.append({"range": f"'{TRACKING_SHEET}'!A{index}:AI{index}", "values": [row]})
+                existing_count += 1
+            else:
+                append_rows.append(row)
             by_key[key] = {
                 **dict(zip(HEADERS, row)),
                 "_sheet_row": None,
@@ -474,7 +496,7 @@ def record_prediction_snapshots(predictions: Iterable[Dict[str, Any]]) -> Dict[s
         if append_rows:
             service.spreadsheets().values().append(
                 spreadsheetId=_sheet_id(),
-                range=f"'{TRACKING_SHEET}'!A:AG",
+                range=f"'{TRACKING_SHEET}'!A:AI",
                 valueInputOption="RAW",
                 insertDataOption="INSERT_ROWS",
                 body={"values": append_rows},
@@ -561,6 +583,8 @@ def _fetch_completed_mlb_games(game_date: str) -> Optional[List[Dict[str, Any]]]
                 continue
 
             completed.append({
+                "mlb_game_pk": str(game.get("gamePk") or ""),
+                "game_date_time": game.get("gameDate"),
                 "home_team": home_name,
                 "away_team": away_name,
                 "home_score": home_score,
@@ -635,6 +659,7 @@ def _completed_espn_events(events: Iterable[Dict[str, Any]]) -> List[Dict[str, A
         ):
             continue
         completed.append({
+            "game_date_time": event.get("date"),
             "home_team": home_name,
             "away_team": away_name,
             "home_score": home_score,
@@ -723,6 +748,19 @@ def _find_completed_game(
 ) -> Optional[Dict[str, Any]]:
     row_home = row.get("home_team_raw") or row.get("home_team")
     row_away = row.get("away_team_raw") or row.get("away_team")
+    if row.get("league") == "MLB":
+        key = row.get("canonical_key") or row.get("snapshot_id") or ""
+        games = list(games)
+        if key.startswith("MLB:gamePk:") and any(g.get("mlb_game_pk") for g in games):
+            return next((g for g in games if g.get("mlb_game_pk") == key.split(":")[-1]), None)
+        tip = _parse_dt(row.get("game_time_ct"))
+        if tip:
+            games = [g for g in games if _parse_dt(g.get("game_date_time"))
+                     and abs(_parse_dt(g["game_date_time"]) - tip) <= timedelta(minutes=30)]
+        if not tip:
+            matches = [g for g in games if _teams_match(row_home, g.get("home_team"))
+                       and _teams_match(row_away, g.get("away_team"))]
+            return matches[0] if len(matches) == 1 else None
     for game in games:
         if _teams_match(row_home, game.get("home_team")) and _teams_match(
             row_away, game.get("away_team")
@@ -808,7 +846,7 @@ def grade_ungraded_predictions(max_days: int = 14, force: bool = False) -> Dict[
                 scoreboard_cache[key] = _fetch_completed_games(*key)
             game = _find_completed_game(row, scoreboard_cache[key])
             market_total = _to_float(row.get("market_total"))
-            if not game or market_total is None:
+            if not game:
                 if not game and scoreboard_cache[key]:
                     samples = unmatched_samples.setdefault(key, [])
                     if len(samples) < 3:
@@ -827,7 +865,7 @@ def grade_ungraded_predictions(max_days: int = 14, force: bool = False) -> Dict[
                     game["away_score"],
                     game["home_score"],
                     actual_total,
-                    _grade_pick(row.get("pick") or "", market_total, actual_total),
+                    _grade_pick(row.get("pick") or "", market_total, actual_total) if market_total is not None else "",
                     now.isoformat(),
                     "FINAL",
                 ]],
@@ -1013,6 +1051,19 @@ def _clv_summary(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _edge_groups(rows):
+    groups = {}
+    for row in rows:
+        key = (row.get("league"), row.get("edge_tier"), row.get("pick"))
+        if all(key):
+            groups.setdefault(key, []).append(row)
+    return [
+        {"league": lg, "tier": tier, "pick": pick, "graded": len(group),
+         "quoted": _quoted_paper_summary(group)}
+        for (lg, tier, pick), group in sorted(groups.items())
+    ]
+
+
 def get_performance_dashboard() -> Dict[str, Any]:
     try:
         service = _sheets_service()
@@ -1026,6 +1077,7 @@ def get_performance_dashboard() -> Dict[str, Any]:
             "by_tier": [],
             "by_pick": [],
             "by_model_version": [],
+            "edge_groups": [],
             "recent": [],
             "tracked_games": 0,
             "total_tracked_games": 0,
@@ -1091,6 +1143,7 @@ def get_performance_dashboard() -> Dict[str, Any]:
 
     return {
         "overall": _aggregate(graded_bets),
+        "edge_groups": _edge_groups(graded_bets),
         "by_league": breakdown("league", ["MLB", "NFL", "NCAAF", "NBA"]),
         "by_tier": breakdown("edge_tier", ["Strong Edge", "Good Edge", "Lean"]),
         "by_pick": breakdown("pick", ["OVER", "UNDER"]),

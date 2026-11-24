@@ -120,10 +120,26 @@
       </article>
     </section>
 
+    {% if dashboard.edge_groups %}
+    <details class="backtest-panel">
+      <summary>Edge tiers by league and pick direction</summary>
+      <p>Priced results use the first eligible pregame sportsbook offer. Hit rate excludes pushes.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>League</th><th>Tier</th><th>Pick</th><th>Graded</th><th>Priced</th><th>W–L–P</th><th>Hit rate</th><th>Paper ROI</th></tr></thead>
+        <tbody>{% for group in dashboard.edge_groups %}
+          {% set q = group.quoted %}
+          <tr><td>{{ group.league }}</td><td>{{ group.tier }}</td><td>{{ group.pick }}</td><td>{{ group.graded }}</td><td>{{ q.count }}</td>
+              <td>{{ q.wins }}–{{ q.losses }}–{{ q.pushes }}</td><td>{{ "%.1f%%"|format(100*q.wins/(q.wins+q.losses)) if q.wins+q.losses else "—" }}</td>
+              <td>{{ "%+.1f%%"|format(q.roi_pct) if q.count else "—" }}</td></tr>
+        {% endfor %}</tbody>
+      </table></div>
+    </details>
+    {% endif %}
+
     <section class="backtest-panel" aria-labelledby="backtestTitle">
       <div class="section-heading">
         <div>
-          <span class="eyebrow">NFL + NBA · archive-only comparison</span>
+          <span class="eyebrow">Archived forecasts</span>
           <h2 id="backtestTitle">Pregame prediction accuracy</h2>
         </div>
         <span class="section-note">{{ dashboard.backtest.eligible }} verified of {{ dashboard.backtest.tracked }} tracked games</span>
@@ -141,6 +157,9 @@
               <strong>{{ league.league }}</strong>
               <small>{{ league.count }} verified · {{ league.excluded }} excluded</small>
             </div>
+            {% if league.forecast_count %}
+              <p>All {{ league.forecast_count }} graded forecasts · MAE {{ "%.2f"|format(league.forecast_mae) }} · bias {{ "%+.2f"|format(league.forecast_bias) }}</p>
+            {% endif %}
             {% if league.count %}
               <div class="backtest-stats">
                 <div><small>BZ MAE</small><strong>{{ "%.2f"|format(league.bz_mae) }}</strong></div>
@@ -171,7 +190,7 @@
       </div>
       {% if dashboard.backtest.excluded %}
         <details class="backtest-exclusions">
-          <summary>Why {{ dashboard.backtest.excluded }} tracked NFL/NBA games were excluded</summary>
+          <summary>Why {{ dashboard.backtest.excluded }} tracked games were excluded</summary>
           <ul>
             {% for reason, count in dashboard.backtest.exclusion_reasons.items() %}
               <li>{{ reason|replace('_', ' ')|capitalize }}: {{ count }}</li>

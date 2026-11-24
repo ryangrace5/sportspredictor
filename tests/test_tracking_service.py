@@ -301,11 +301,11 @@ class TrackingServiceTests(unittest.TestCase):
 
         self.assertEqual(result["inserted"], 1)
         request = service.spreadsheets().values().append.call_args.kwargs
-        self.assertTrue(request["range"].endswith("!A:AG"))
+        self.assertTrue(request["range"].endswith("!A:AI"))
         row = request["body"]["values"][0]
         self.assertEqual(len(row), len(HEADERS))
         self.assertEqual(row[8], 44.5)  # unchanged consensus column
-        self.assertEqual(row[-4:], [
+        self.assertEqual(row[29:33], [
             "Example Book", 44.0, -105,
             (now - timedelta(minutes=15)).isoformat(),
         ])
@@ -323,8 +323,8 @@ class TrackingServiceTests(unittest.TestCase):
         _ensure_tracking_sheet(service)
         updates = service.spreadsheets().batchUpdate.call_args.kwargs
         request = updates["body"]["requests"][0]["appendDimension"]
-        self.assertEqual(request, {"sheetId": 7, "dimension": "COLUMNS", "length": 4})
-        self.assertTrue(service.spreadsheets().values().update.call_args.kwargs["range"].endswith("!A1:AG1"))
+        self.assertEqual(request, {"sheetId": 7, "dimension": "COLUMNS", "length": 6})
+        self.assertTrue(service.spreadsheets().values().update.call_args.kwargs["range"].endswith("!A1:AI1"))
 
 
 

@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from math import isfinite, isclose, sqrt
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-LEAGUES = ("NFL", "NBA")
+LEAGUES = ("NFL", "NBA", "MLB", "NCAAF")
 MAX_QUOTE_AGE = timedelta(hours=2)
 MIN_DESCRIPTIVE_SAMPLE = 30
 
@@ -131,7 +131,7 @@ def _metrics(observations: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def evaluate_pregame_snapshots(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
-    """Summarize pregame NFL/NBA forecasts, excluding unverified history.
+    """Summarize pregame league forecasts, excluding unverified history.
 
     The caller should pass canonical/deduplicated historical tracking rows.
     The metrics describe archived forecasts, not an out-of-sample proof of
@@ -157,7 +157,20 @@ def evaluate_pregame_snapshots(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]
         league_valid = [item for item in valid if item["league"] == league]
         league_all = [item for item in all_rows if (item.get("league") or "").upper() == league]
         versions = sorted({item["model_version"] for item in league_valid})
+        forecast_errors = []
+        for row in league_all:
+            first = _finite_float(row.get("first_bz_total") or row.get("bz_total"))
+            actual = _finite_float(row.get("actual_total"))
+            observed = _aware_datetime(row.get("first_forecast_at_ct") or row.get("snapshot_at_ct"))
+            kickoff = _aware_datetime(row.get("game_time_ct"))
+            if (row.get("status") == "FINAL" and first is not None and first > 0
+                    and actual is not None and actual >= 0 and observed and kickoff and observed < kickoff):
+                forecast_errors.append(first - actual)
+        n = len(forecast_errors)
         league_results.append({
+            "forecast_count": n,
+            "forecast_mae": round(sum(map(abs, forecast_errors)) / n, 2) if n else None,
+            "forecast_bias": round(sum(forecast_errors) / n, 2) if n else None,
             "league": league,
             "tracked": len(league_all),
             "excluded": len(league_all) - len(league_valid),
