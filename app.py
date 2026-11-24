@@ -224,7 +224,7 @@ def fetch_data_from_sheets(league_tab: str) -> pd.DataFrame:
     service = build("sheets", "v4", credentials=creds, cache_discovery=False)
 
     rng = f"{league_tab}!A1:F1000" if league_tab in {"NBA", "NBA_PRIOR"} else f"{league_tab}!A1:D1000"
-    res = service.spreadsheets().values().get(spreadsheetId=sheet_id, range=rng).execute()
+    res = service.spreadsheets().values().get(spreadsheetId=sheet_id, range=rng, valueRenderOption="UNFORMATTED_VALUE").execute()
     values = res.get("values", [])
 
     # The prior NBA tab contained preseason numbers. Never trust a legacy or
@@ -262,7 +262,7 @@ def fetch_data_from_sheets(league_tab: str) -> pd.DataFrame:
     df["Team"] = df["Team"].astype(str).str.strip()
     df = df[df["Team"] != ""]
     for c in ["G", "PF", "PA"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+        df[c] = pd.to_numeric(df[c], errors="coerce")
     df.set_index("Team", inplace=True)
 
     sheet_data_cache[league_tab] = (now, df.copy())
@@ -407,6 +407,14 @@ def _nba_season_for_date(target_date):
     return f"{start}-{start + 1}"
 
 
+def _sportsdb_season_for_date(league_name, target_date):
+    if league_name == "NBA":
+        return _nba_season_for_date(target_date)
+    if league_name == "NFL" and target_date.month <= 2:
+        return str(target_date.year - 1)
+    return str(target_date.year)
+
+
 def get_todays_games(league_name, target_date=None):
     league_id = SPORT_LEAGUES[league_name]
     target_date = target_date or datetime.now(LOCAL_TIMEZONE).date()
@@ -453,12 +461,7 @@ def get_todays_games(league_name, target_date=None):
         return games_today
 
     # Pro leagues: SportsDB season feed.
-    season_map = {
-        "NBA": _nba_season_for_date(target_date),
-        "MLB": "2026",
-        "NFL": "2026",
-    }
-    season = season_map.get(league_name, "2026")
+    season = _sportsdb_season_for_date(league_name, target_date)
 
     url = (
         f"https://www.thesportsdb.com/api/v1/json/{API_KEY}/"
@@ -552,7 +555,7 @@ def _nba_blended_team_rates(current_row, prior_row):
         if row is None:
             return None
         try:
-            g, pf, pa = (float(row.get(key, 0)) for key in ("G", "PF", "PA"))
+            g, pf, pa = (float(row.get(key)) for key in ("G", "PF", "PA"))
             if not all(math.isfinite(x) for x in (g, pf, pa)):
                 return None
             if g <= 0 or pf < 0 or pa < 0:
@@ -587,6 +590,9 @@ def predict_game_totals(league_name, target_date=None):
     games = get_todays_games(league_name, target_date=target_date)
     logging.info("%s games fetched: %s", league_name, len(games))
 
+    if not games:
+        return []
+
     # Resolve NCAAF schedule names against the curated Sheet/mapping below.
     # Do not auto-save every ESPN opponent into ncaaf_team_mapping.json; that
     # previously caused FCS/non-model teams to accumulate in the app.
@@ -609,9 +615,9 @@ def predict_game_totals(league_name, target_date=None):
 
     def _per_game(row):
         try:
-            g = float(row.get("G", 0))
-            pf = float(row.get("PF", 0))
-            pa = float(row.get("PA", 0))
+            g = float(row.get("G"))
+            pf = float(row.get("PF"))
+            pa = float(row.get("PA"))
             if not all(math.isfinite(value) for value in (g, pf, pa)):
                 return None, None
             if g <= 0 or pf < 0 or pa < 0:
