@@ -375,6 +375,8 @@ def _find_market_for_prediction(
 
         # Reject clearly wrong repeat matchups from different dates. An unknown
         # timestamp can still supply a research line, but cannot be shortlisted.
+        if prediction.get("doubleheader") and (time_diff is None or time_diff > 30 * 60):
+            continue
         if time_diff is not None and time_diff > 6 * 60 * 60:
             continue
         candidates.append((time_diff, market))

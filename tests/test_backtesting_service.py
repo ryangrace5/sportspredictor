@@ -49,7 +49,7 @@ class PregameBacktestTests(unittest.TestCase):
     def test_filters_leagues_and_reports_no_data_as_null_metrics(self):
         result = evaluate_pregame_snapshots([
             self.row(league="NBA", model_version="nba_regular_season_blend_v1"),
-            self.row(league="NCAAF"),
+            self.row(league="NHL"),
         ])
         self.assertEqual(result["tracked"], 1)
         self.assertEqual(result["leagues"][0]["count"], 0)

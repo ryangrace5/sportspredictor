@@ -3,6 +3,7 @@ import logging
 import math
 import os
 import re
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
@@ -24,6 +25,7 @@ from googleapiclient.discovery import build
 
 from espn_scraper import run_scraper
 from ncaaf_team_matching_helper import resolve_team
+from mlb_model_service import mlb_prediction_schedule
 from odds_service import enrich_predictions_with_odds, odds_api_enabled, select_best_bets
 from tracking_service import (
     get_performance_dashboard,
@@ -460,6 +462,11 @@ def get_todays_games(league_name, target_date=None):
         )
         return games_today
 
+    if league_name == "MLB":
+        mlb_games = mlb_prediction_schedule(target_date)
+        if mlb_games:
+            return [g for g in mlb_games if _is_game_today_local(g)]
+
     # Pro leagues: SportsDB season feed.
     season = _sportsdb_season_for_date(league_name, target_date)
 
@@ -647,6 +654,7 @@ def predict_game_totals(league_name, target_date=None):
         except KeyError:
             return None, None
 
+    scheduled_pairs = Counter((g.get("strHomeTeam"), g.get("strAwayTeam")) for g in games)
     for game in games:
         home_raw = game.get("strHomeTeam")
         away_raw = game.get("strAwayTeam")
@@ -677,7 +685,7 @@ def predict_game_totals(league_name, target_date=None):
             )
             continue
 
-        matchup_key = tuple(sorted([name_home, name_away]))
+        matchup_key = (name_home, name_away, game.get("mlb_game_pk") or game_time_local)
         if matchup_key in seen_matchups:
             continue
         seen_matchups.add(matchup_key)
@@ -712,6 +720,8 @@ def predict_game_totals(league_name, target_date=None):
         predictions.append(
             {
                 "sport": league_name,
+                "mlb_game_pk": game.get("mlb_game_pk"),
+                "doubleheader": league_name == "MLB" and scheduled_pairs[(home_raw, away_raw)] > 1,
                 "team1": name_away,
                 "team2": name_home,
                 "away_team_raw": away_raw,

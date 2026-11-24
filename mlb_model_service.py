@@ -103,6 +103,23 @@ def _schedule_games_for_date(game_date: date) -> List[Dict[str, Any]]:
     return games
 
 
+def mlb_prediction_schedule(day):
+    games = []
+    for event in _schedule_games_for_date(day):
+        try:
+            tip = datetime.fromisoformat(event["gameDate"].replace("Z", "+00:00"))
+            games.append({
+                "mlb_game_pk": str(event["gamePk"]),
+                "dateEvent": tip.strftime("%Y-%m-%d"),
+                "strTime": tip.strftime("%H:%M:%S"),
+                "strHomeTeam": event["teams"]["home"]["team"]["name"],
+                "strAwayTeam": event["teams"]["away"]["team"]["name"],
+            })
+        except (KeyError, ValueError, TypeError):
+            continue
+    return games
+
+
 def _recent_games_payload(game_date: date) -> List[Dict[str, Any]]:
     # A ~24-day window normally contains enough games to build a last-10 sample
     # even with off days, postponements, and the All-Star break.
@@ -200,13 +217,16 @@ def _match_schedule_game(
     pred_home = prediction.get("home_team_raw") or prediction.get("team2")
     pred_away = prediction.get("away_team_raw") or prediction.get("team1")
 
+    if prediction.get("mlb_game_pk"):
+        return next((g for g in schedule_games if str(g.get("gamePk")) == prediction["mlb_game_pk"]), None)
+    matches = []
     for game in schedule_games:
         teams = game.get("teams") or {}
         home_name = ((teams.get("home") or {}).get("team") or {}).get("name")
         away_name = ((teams.get("away") or {}).get("team") or {}).get("name")
         if _teams_match(pred_home, home_name) and _teams_match(pred_away, away_name):
-            return game
-    return None
+            matches.append(game)
+    return matches[0] if len(matches) == 1 else None
 
 
 def _probable_pitcher(team_blob: Dict[str, Any]) -> Optional[Dict[str, Any]]:
